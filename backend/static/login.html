@@ -29,8 +29,10 @@
           const res = await fetch('/api/admin/login', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({master_token: v})})
           if(!res.ok){ const t = await res.text(); alert('Login failed: '+t); return }
           const j = await res.json()
-          // store session token
+          // store session token only; clear the master token input immediately
           localStorage.setItem('jarvis_admin_session', j.session_token)
+          document.getElementById('token').value = ''
+          // redirect to logs
           window.location.href = '/ui/logs.html'
         }catch(e){ alert('Login error: '+String(e)) }
       })
