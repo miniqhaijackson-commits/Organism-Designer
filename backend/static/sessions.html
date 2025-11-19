@@ -25,7 +25,9 @@
       async function load(){
         const token = document.getElementById('token').value || localStorage.getItem('jarvis_admin_session') || ''
         if(!token){ alert('provide session'); return }
-        const res = await fetch('/api/admin/sessions', {headers: {'x-admin-session': token}})
+        const limit = window.__sess_limit || 10
+        const offset = window.__sess_offset || 0
+        const res = await fetch('/api/admin/sessions?limit='+limit+'&offset='+offset, {headers: {'x-admin-session': token}})
         if(!res.ok){ alert('failed to load sessions'); return }
         const arr = await res.json()
         const tb = document.getElementById('rows')
@@ -33,9 +35,16 @@
         arr.forEach(s=>{
           const tr = document.createElement('tr')
           const ex = new Date(s.expires_at*1000).toISOString()
-          tr.innerHTML = `<td>${s.session_token}</td><td>${s.actor}</td><td>${ex}</td><td><button data-token='${s.session_token}'>Revoke</button></td>`
+          tr.innerHTML = `<td style="word-break:break-all">${s.session_token}</td><td>${s.actor}</td><td>${ex}</td><td><button data-token='${s.session_token}'>Revoke</button></td>`
           tb.appendChild(tr)
         })
+        // add pagination controls
+        const pager = document.getElementById('pager') || document.createElement('div')
+        pager.id = 'pager'
+        pager.innerHTML = `<button id="prev">Prev</button> <button id="next">Next</button> <label>limit:<input id="limit" value="${limit}" style="width:60px"/></label>`
+        tb.parentNode.insertBefore(pager, tb.nextSibling)
+        document.getElementById('next').addEventListener('click', ()=>{ window.__sess_offset = (window.__sess_offset||0) + (parseInt(document.getElementById('limit').value||'10')); window.__sess_limit = parseInt(document.getElementById('limit').value||'10'); load() })
+        document.getElementById('prev').addEventListener('click', ()=>{ window.__sess_offset = Math.max(0, (window.__sess_offset||0) - (parseInt(document.getElementById('limit').value||'10'))); window.__sess_limit = parseInt(document.getElementById('limit').value||'10'); load() })
         document.querySelectorAll('button[data-token]').forEach(b=>{
           b.addEventListener('click', async (ev)=>{
             const t = b.getAttribute('data-token')
@@ -46,6 +55,21 @@
         })
       }
       document.getElementById('load').addEventListener('click', load)
+      // revoke-by-actor control
+      const actorDiv = document.createElement('div')
+      actorDiv.innerHTML = '<input id="revoke-actor" placeholder="actor"/> <button id="revoke-actor-btn">Revoke All for Actor</button>'
+      document.body.insertBefore(actorDiv, document.querySelector('table'))
+      document.getElementById('revoke-actor-btn').addEventListener('click', async ()=>{
+        const actor = document.getElementById('revoke-actor').value || ''
+        if(!actor){ alert('enter actor'); return }
+        const token = document.getElementById('token').value || localStorage.getItem('jarvis_admin_session') || ''
+        if(!token){ alert('provide session'); return }
+        if(!confirm('Revoke all sessions for actor: ' + actor + '?')) return
+        const res = await fetch('/api/admin/revoke_actor', {method:'POST', headers:{'Content-Type':'application/json', 'x-admin-session': token}, body: JSON.stringify({actor: actor})})
+        if(!res.ok){ alert('revoke actor failed'); return }
+        alert('revoked')
+        load()
+      })
     </script>
   </body>
 </html>

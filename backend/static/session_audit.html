@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Session Audit — J.A.R.V.I.S.</title>
+    <style>
+      body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:20px}
+      table{width:100%;border-collapse:collapse}
+      th,td{padding:8px;border-bottom:1px solid #eee}
+    </style>
+  </head>
+  <body>
+    <h2>Revoked Tokens Audit</h2>
+    <div>
+      <input id="token" placeholder="session token" style="width:60%" />
+      <button id="load">Load Audit</button>
+    </div>
+    <table>
+      <thead><tr><th>Token</th><th>Actor</th><th>Reason</th><th>Revoked At</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <script>
+      async function load(){
+        const token = document.getElementById('token').value || localStorage.getItem('jarvis_admin_session') || ''
+        if(!token){ alert('provide session'); return }
+        const res = await fetch('/api/admin/session_audit?limit=100', {headers: {'x-admin-session': token}})
+        if(!res.ok){ alert('failed to load'); return }
+        const arr = await res.json()
+        const tb = document.getElementById('rows')
+        tb.innerHTML = ''
+        arr.forEach(r=>{
+          const tr = document.createElement('tr')
+          tr.innerHTML = `<td style="word-break:break-all">${r.token}</td><td>${r.actor}</td><td>${r.reason}</td><td>${r.revoked_at}</td>`
+          tb.appendChild(tr)
+        })
+      }
+      document.getElementById('load').addEventListener('click', load)
+    </script>
+  </body>
+</html>

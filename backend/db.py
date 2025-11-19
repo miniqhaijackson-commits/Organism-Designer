@@ -379,6 +379,30 @@ def revoke_all_for_actor(actor: str) -> int:
     return removed_stateful
 
 
+def list_revoked_tokens(limit: int = 100, offset: int = 0):
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT token, actor, reason, revoked_at FROM revoked_tokens ORDER BY revoked_at DESC LIMIT ? OFFSET ?", (limit, offset))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def cleanup_revoked_tokens(older_than_seconds: int = 60 * 60 * 24 * 30) -> int:
+    """Remove revoked token records older than `older_than_seconds` and return number removed."""
+    import time
+    cutoff = int(time.time()) - int(older_than_seconds)
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM revoked_tokens WHERE revoked_at<?", (cutoff,))
+    removed = cur.rowcount
+    conn.commit()
+    conn.close()
+    return removed
+
+
 def cleanup_expired_admin_sessions() -> int:
     """Delete expired admin sessions and return the number removed."""
     import time

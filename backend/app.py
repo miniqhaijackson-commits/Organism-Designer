@@ -105,8 +105,16 @@ def admin_revoke_session(request: Request, session_token: str):
         sid = payload.get('sid')
         if sid:
             db.revoke_token(sid, actor=payload.get('actor'), reason='manual_revoke')
+            try:
+                settings_mod.append_audit_entry('admin', 'revoke_session', old_value=None, new_value=sid, reason='manual revoke')
+            except Exception:
+                pass
             return {'revoked': True}
         db.revoke_token(session_token, reason='manual_revoke')
+        try:
+            settings_mod.append_audit_entry('admin', 'revoke_session', old_value=None, new_value=session_token, reason='manual revoke')
+        except Exception:
+            pass
         return {'revoked': True}
 
     # otherwise try to remove from stateful sessions
@@ -114,6 +122,10 @@ def admin_revoke_session(request: Request, session_token: str):
     if okr:
         # also mark token as revoked for good measure
         db.revoke_token(session_token, reason='manual_revoke')
+        try:
+            settings_mod.append_audit_entry('admin', 'revoke_session', old_value=None, new_value=session_token, reason='manual revoke')
+        except Exception:
+            pass
         return {'revoked': True}
     raise HTTPException(status_code=404, detail='session not found')
 
@@ -129,10 +141,18 @@ def admin_revoke_actor(request: Request, payload: dict = Body(...)):
     removed = db.revoke_all_for_actor(actor)
     # append audit entry
     try:
-        settings_mod.append_audit_entry('system', 'revoke_actor', old_value=0, new_value=removed, reason=f'revoke_all_for_{actor}')
+        settings_mod.append_audit_entry('admin', 'revoke_actor', old_value=0, new_value=removed, reason=f'revoke_all_for_{actor}')
     except Exception:
         pass
     return {'removed_stateful': removed}
+
+
+@app.get('/api/admin/session_audit')
+def admin_session_audit(request: Request, limit: int = 100, offset: int = 0):
+    ok, _ = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    return db.list_revoked_tokens(limit=limit, offset=offset)
 
 
 @app.post("/projects", response_model=ProjectOut)
@@ -264,6 +284,30 @@ def _autosave_loop(interval: int = 60):
     t.start()
 
 
+def _revoked_cleanup_loop(interval: int = 3600, retention: int = 60 * 60 * 24 * 30):
+    import threading, time
+
+    def loop():
+        while True:
+            try:
+                try:
+                    removed = db.cleanup_revoked_tokens(older_than_seconds=retention)
+                    if removed:
+                        try:
+                            import backend.settings as settings_mod_local
+                            settings_mod_local.append_audit_entry('system', 'revoked_cleanup', old_value=0, new_value=removed, reason='periodic revoked cleanup')
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            time.sleep(interval)
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+
+
 def _session_cleanup_loop(interval: int = 300):
     import threading, time
 
@@ -305,6 +349,16 @@ def startup_event():
     except Exception:
         cleanup_interval = 300
     _session_cleanup_loop(interval=cleanup_interval)
+    # start revoked-token cleanup loop (configurable retention and interval)
+    try:
+        revoked_interval = int(os.environ.get('JARVIS_REVOKED_CLEANUP_INTERVAL', '3600'))
+    except Exception:
+        revoked_interval = 3600
+    try:
+        retention = int(os.environ.get('JARVIS_REVOKE_RETENTION_SECONDS', str(60 * 60 * 24 * 30)))
+    except Exception:
+        retention = 60 * 60 * 24 * 30
+    _revoked_cleanup_loop(interval=revoked_interval, retention=retention)
 
 
 @app.post("/transcribe")
