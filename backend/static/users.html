@@ -23,7 +23,7 @@
       <button id="create">Create User</button>
     </div>
     <table>
-      <thead><tr><th>Actor</th><th>Role</th></tr></thead>
+      <thead><tr><th>Actor</th><th>Role</th><th>Actions</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
     <script>
@@ -39,8 +39,22 @@
         tb.innerHTML = ''
         arr.forEach(u=>{
           const tr = document.createElement('tr')
-          tr.innerHTML = `<td>${u.actor}</td><td>${u.role}</td>`
+          tr.innerHTML = `<td>${u.actor}</td><td>${u.role}</td><td><button data-actor="${u.actor}" class="del">Delete</button></td>`
           tb.appendChild(tr)
+        })
+        document.querySelectorAll('button.del').forEach(b=>{
+          b.addEventListener('click', async (ev)=>{
+            const actor = b.getAttribute('data-actor')
+            if(!confirm('Delete user: '+actor+' ?')) return
+            const token = document.getElementById('token').value || ''
+            const useHeader = !!token
+            const opts = {method: 'DELETE'}
+            if(useHeader){ opts.headers = {'x-admin-session': token} } else { opts.credentials = 'same-origin' }
+            const res = await fetch('/api/admin/users/' + encodeURIComponent(actor), opts)
+            if(!res.ok){ const t = await res.text(); alert('delete failed: '+t); return }
+            alert('user deleted')
+            load()
+          })
         })
       }
       document.getElementById('load').addEventListener('click', load)
