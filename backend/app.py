@@ -207,6 +207,24 @@ def _autosave_loop(interval: int = 60):
     t.start()
 
 
+def _session_cleanup_loop(interval: int = 300):
+    import threading, time
+
+    def loop():
+        while True:
+            try:
+                try:
+                    removed = db.cleanup_expired_admin_sessions()
+                except Exception:
+                    removed = 0
+            except Exception:
+                pass
+            time.sleep(interval)
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+
+
 @app.on_event("startup")
 def startup_event():
     # Ensure database is initialized on startup
@@ -218,6 +236,12 @@ def startup_event():
     except Exception:
         interval = 60
     _autosave_loop(interval=interval)
+    # start session cleanup loop (remove expired admin sessions)
+    try:
+        cleanup_interval = int(os.environ.get('JARVIS_SESSION_CLEANUP_INTERVAL', '300'))
+    except Exception:
+        cleanup_interval = 300
+    _session_cleanup_loop(interval=cleanup_interval)
 
 
 @app.post("/transcribe")

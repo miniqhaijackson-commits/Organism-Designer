@@ -229,6 +229,20 @@ def revoke_admin_session(session_token: str) -> bool:
     return bool(changed)
 
 
+def cleanup_expired_admin_sessions() -> int:
+    """Delete expired admin sessions and return the number removed."""
+    import time
+    now = int(time.time())
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM admin_sessions WHERE expires_at<?", (now,))
+    removed = cur.rowcount
+    conn.commit()
+    conn.close()
+    return removed
+
+
 def add_project_file(project_id: int, filename: str, content: bytes) -> str:
     # ensure project folder
     folder = DB_PATH.parent / "projects" / str(project_id)
