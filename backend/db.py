@@ -188,6 +188,10 @@ def _ensure_admin_table(conn):
     cur.execute(
         "CREATE TABLE IF NOT EXISTS revoked_tokens (token TEXT PRIMARY KEY, actor TEXT, reason TEXT, revoked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
     )
+    # users table for RBAC: actor -> role
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS admin_users (actor TEXT PRIMARY KEY, role TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
 
 
 def _base64url_encode(b: bytes) -> str:
@@ -393,6 +397,95 @@ def list_revoked_tokens(limit: int = 100, offset: int = 0):
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def create_user(actor: str, role: str = 'admin') -> bool:
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    try:
+        cur.execute("INSERT OR REPLACE INTO admin_users (actor, role) VALUES (?, ?)", (actor, role))
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
+def delete_user(actor: str) -> bool:
+    """Remove an RBAC user entry."""
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM admin_users WHERE actor=?", (actor,))
+        removed = cur.rowcount
+        conn.commit()
+        return bool(removed)
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
+def get_user_role(actor: str) -> str | None:
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT role FROM admin_users WHERE actor=?", (actor,))
+    row = cur.fetchone()
+    conn.close()
+    return row['role'] if row else None
+
+
+def list_users(limit: int = 100, offset: int = 0):
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT actor, role, created_at FROM admin_users ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_user(actor: str) -> bool:
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM admin_users WHERE actor=?", (actor,))
+        removed = cur.rowcount
+        conn.commit()
+        return bool(removed)
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
+def count_active_sessions() -> int:
+    import time
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) as c FROM admin_sessions WHERE expires_at>?", (int(time.time()),))
+    row = cur.fetchone()
+    conn.close()
+    return int(row['c']) if row else 0
+
+
+def count_revoked_tokens() -> int:
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) as c FROM revoked_tokens")
+    row = cur.fetchone()
+    conn.close()
+    return int(row['c']) if row else 0
 
 
 def cleanup_revoked_tokens(older_than_seconds: int = 60 * 60 * 24 * 30) -> int:

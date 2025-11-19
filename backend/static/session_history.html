@@ -13,7 +13,7 @@
     <h2>Session History</h2>
     <p>Shows session create/revoke events and cleanup runs.</p>
     <div>
-      <input id="token" placeholder="session token" style="width:60%" />
+      <input id="token" placeholder="(optional) manual token for header auth" style="width:60%" />
       <button id="load">Load History</button>
     </div>
     <div>
@@ -26,8 +26,9 @@
     <div id="out"></div>
     <script>
       async function load(){
-        const token = document.getElementById('token').value || localStorage.getItem('jarvis_admin_session') || ''
-        if(!token){ alert('provide session'); return }
+        const token = document.getElementById('token').value || ''
+        const useHeader = !!token
+        if(!useHeader){ /* rely on cookie */ }
         const actor = document.getElementById('filter-actor').value || null
         const field = document.getElementById('filter-field').value || null
         const limit = parseInt(document.getElementById('filter-limit').value || '50')
@@ -35,7 +36,9 @@
         const params = new URLSearchParams({limit: String(limit), offset: String(offset)})
         if(actor) params.set('actor', actor)
         if(field) params.set('field', field)
-        const res = await fetch('/api/admin/session_history?' + params.toString(), {headers: {'x-admin-session': token}})
+        const opts = {}
+        if(useHeader){ opts.headers = {'x-admin-session': token} } else { opts.credentials = 'same-origin' }
+        const res = await fetch('/api/admin/session_history?' + params.toString(), opts)
         if(!res.ok){ alert('failed to load'); return }
         const arr = await res.json()
         const out = document.getElementById('out'); out.innerHTML = ''

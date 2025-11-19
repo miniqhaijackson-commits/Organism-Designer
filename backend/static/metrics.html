@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Metrics — J.A.R.V.I.S.</title>
+    <style>body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:20px} .card{padding:12px;border:1px solid #eee;margin:8px 0}</style>
+  </head>
+  <body>
+    <h2>System Metrics</h2>
+    <p>Requires admin session. Login to set the HttpOnly cookie or provide a manual token.</p>
+    <div>
+      <input id="token" placeholder="(optional) manual token for header auth" style="width:60%" />
+      <button id="load">Refresh</button>
+    </div>
+    <div id="out">
+      <div class="card">Active Sessions: <span id="active">-</span></div>
+      <div class="card">Revoked Tokens: <span id="revoked">-</span></div>
+      <div class="card">Known Users: <span id="users">-</span></div>
+    </div>
+    <script>
+      async function load(){
+        const token = document.getElementById('token').value || ''
+        const useHeader = !!token
+        const opts = {}
+        if(useHeader){ opts.headers = {'x-admin-session': token} } else { opts.credentials = 'same-origin' }
+        const res = await fetch('/api/admin/metrics', opts)
+        if(!res.ok){ alert('failed to load metrics'); return }
+        const j = await res.json()
+        document.getElementById('active').innerText = j.active_sessions
+        document.getElementById('revoked').innerText = j.revoked_tokens
+        document.getElementById('users').innerText = j.users
+      }
+      document.getElementById('load').addEventListener('click', load)
+      load()
+    </script>
+  </body>
+</html>

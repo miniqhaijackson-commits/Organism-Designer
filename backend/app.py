@@ -31,12 +31,21 @@ def health():
 
 
 def _verify_admin(request: Request):
-    # Prefer short-lived session token
+    # Prefer short-lived session token from header or cookie
     session = request.headers.get('x-admin-session')
+    if not session:
+        session = request.cookies.get('jarvis_admin_session')
     if session:
         ok, actor = db.verify_admin_session(session)
         if ok:
-            return True, actor
+            # Check RBAC: actor must have role 'admin' (unless master token used)
+            role = db.get_user_role(actor)
+            if role == 'admin' or os.environ.get('JARVIS_ADMIN_TOKEN') and request.headers.get('x-admin-token') == os.environ.get('JARVIS_ADMIN_TOKEN'):
+                return True, actor
+            # If no role assigned, default to admin for compatibility
+            if role is None:
+                return True, actor
+            return False, None
 
     # Fallback to environment master token (legacy)
     token = request.headers.get('x-admin-token')
@@ -64,18 +73,32 @@ def admin_login(request: Request, payload: dict = Body(...)):
     if not env or master != env:
         raise HTTPException(status_code=401, detail='invalid master token')
     sess = db.create_admin_session(actor=actor, ttl_seconds=ttl)
-    return sess
+    # set HttpOnly cookie with session token or jwt if available
+    from fastapi import Response
+    cookie_val = sess.get('jwt') or sess.get('session_token')
+    resp = Response(content='{"ok": true}', media_type='application/json')
+    secure = bool(os.environ.get('JARVIS_SECURE_COOKIES', '0') == '1')
+    resp.set_cookie('jarvis_admin_session', cookie_val, httponly=True, secure=secure, samesite='lax', max_age=ttl, path='/')
+    return resp
 
 
 @app.post('/api/admin/logout')
 def admin_logout(request: Request):
-    session = request.headers.get('x-admin-session')
+    # support session from cookie or header
+    session = request.headers.get('x-admin-session') or request.cookies.get('jarvis_admin_session')
     if not session:
         raise HTTPException(status_code=400, detail='no session token provided')
     ok = db.revoke_admin_session(session)
-    if not ok:
-        raise HTTPException(status_code=404, detail='session not found')
-    return {'revoked': True}
+    # also mark revoked for stateless tokens
+    try:
+        db.revoke_token(session, reason='logout')
+    except Exception:
+        pass
+    from fastapi import Response
+    resp = Response(content='{"revoked": true}', media_type='application/json')
+    # delete cookie
+    resp.delete_cookie('jarvis_admin_session', path='/')
+    return resp
 
 
 @app.get('/api/admin/sessions')
@@ -162,6 +185,72 @@ def admin_session_history(request: Request, limit: int = 100, offset: int = 0, a
         raise HTTPException(status_code=401, detail='admin required')
     # Reuse settings.get_audit_logs to return session-related audit entries (session_create, revoke_session, revoke_actor, session_cleanup)
     return settings_mod.get_audit_logs(limit=limit, offset=offset, actor=actor, field=field, since=since, until=until)
+
+
+@app.get('/api/admin/users')
+def admin_list_users(request: Request, limit: int = 100, offset: int = 0):
+    ok, _ = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    return db.list_users(limit=limit, offset=offset)
+
+
+@app.post('/api/admin/users')
+def admin_create_user(request: Request, payload: dict = Body(...)):
+    ok, actor = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    username = payload.get('actor')
+    role = payload.get('role') or 'admin'
+    if not username:
+        raise HTTPException(status_code=400, detail='actor required')
+    created = db.create_user(username, role)
+    try:
+        settings_mod.append_audit_entry(actor or 'admin', 'create_user', old_value=None, new_value={'actor': username, 'role': role}, reason='rbac create')
+    except Exception:
+        pass
+    return {'created': True, 'actor': username, 'role': role}
+
+
+@app.delete('/api/admin/users/{actor}')
+def admin_delete_user(request: Request, actor: str):
+    ok, user = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    removed = db.delete_user(actor)
+    try:
+        settings_mod.append_audit_entry(user or 'admin', 'delete_user', old_value={'actor': actor}, new_value=None, reason='rbac delete')
+    except Exception:
+        pass
+    if removed:
+        return {'deleted': True, 'actor': actor}
+    raise HTTPException(status_code=404, detail='user not found')
+
+
+@app.delete('/api/admin/users/{actor}')
+def admin_delete_user(request: Request, actor: str):
+    ok, admin_actor = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    removed = db.delete_user(actor)
+    if removed:
+        try:
+            settings_mod.append_audit_entry(admin_actor or 'admin', 'delete_user', old_value={'actor': actor}, new_value=None, reason='rbac delete')
+        except Exception:
+            pass
+        return {'deleted': True, 'actor': actor}
+    raise HTTPException(status_code=404, detail='user not found')
+
+
+@app.get('/api/admin/metrics')
+def admin_metrics(request: Request):
+    ok, _ = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    active = db.count_active_sessions()
+    revoked = db.count_revoked_tokens()
+    users = len(db.list_users(limit=10000, offset=0))
+    return {'active_sessions': active, 'revoked_tokens': revoked, 'users': users}
 
 
 @app.post("/projects", response_model=ProjectOut)

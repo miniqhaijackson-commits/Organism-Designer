@@ -1,2 +1,6 @@
-# Minimal requirements for the local test suite
-# (all code uses only the Python standard library; no external deps needed)
+# Minimal requirements for the local prototype
+fastapi>=0.95.0
+uvicorn[standard]>=0.22.0
+vosk>=0.3.45
+pyttsx3>=2.90
+
