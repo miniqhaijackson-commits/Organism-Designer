@@ -155,6 +155,15 @@ def admin_session_audit(request: Request, limit: int = 100, offset: int = 0):
     return db.list_revoked_tokens(limit=limit, offset=offset)
 
 
+@app.get('/api/admin/session_history')
+def admin_session_history(request: Request, limit: int = 100, offset: int = 0, actor: str | None = None, field: str | None = None, since: int | None = None, until: int | None = None):
+    ok, _ = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    # Reuse settings.get_audit_logs to return session-related audit entries (session_create, revoke_session, revoke_actor, session_cleanup)
+    return settings_mod.get_audit_logs(limit=limit, offset=offset, actor=actor, field=field, since=since, until=until)
+
+
 @app.post("/projects", response_model=ProjectOut)
 def create_project(p: ProjectCreate):
     project_id = db.create_project(p.title, p.description or "")

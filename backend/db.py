@@ -283,6 +283,12 @@ def create_admin_session(actor: str, ttl_seconds: int = 3600) -> dict:
     out = {"session_token": token, "actor": actor, "expires_at": expires}
     if jwt_val:
         out['jwt'] = jwt_val
+    # append audit entry for creation
+    try:
+        import backend.settings as settings_mod_local
+        settings_mod_local.append_audit_entry(actor, 'session_create', old_value=None, new_value=token, reason='session created')
+    except Exception:
+        pass
     return out
 
 

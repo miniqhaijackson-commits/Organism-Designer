@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Session History — J.A.R.V.I.S.</title>
+    <style>
+      body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:20px}
+      .entry{border-bottom:1px solid #eee;padding:8px 0}
+      input,button{padding:6px;margin:4px}
+    </style>
+  </head>
+  <body>
+    <h2>Session History</h2>
+    <p>Shows session create/revoke events and cleanup runs.</p>
+    <div>
+      <input id="token" placeholder="session token" style="width:60%" />
+      <button id="load">Load History</button>
+    </div>
+    <div>
+      <label>Actor: <input id="filter-actor" /></label>
+      <label>Field: <input id="filter-field" /></label>
+      <label>Limit: <input id="filter-limit" value="50" style="width:80px"/></label>
+      <button id="next">Next</button>
+      <button id="prev">Prev</button>
+    </div>
+    <div id="out"></div>
+    <script>
+      async function load(){
+        const token = document.getElementById('token').value || localStorage.getItem('jarvis_admin_session') || ''
+        if(!token){ alert('provide session'); return }
+        const actor = document.getElementById('filter-actor').value || null
+        const field = document.getElementById('filter-field').value || null
+        const limit = parseInt(document.getElementById('filter-limit').value || '50')
+        const offset = window.__hist_offset || 0
+        const params = new URLSearchParams({limit: String(limit), offset: String(offset)})
+        if(actor) params.set('actor', actor)
+        if(field) params.set('field', field)
+        const res = await fetch('/api/admin/session_history?' + params.toString(), {headers: {'x-admin-session': token}})
+        if(!res.ok){ alert('failed to load'); return }
+        const arr = await res.json()
+        const out = document.getElementById('out'); out.innerHTML = ''
+        if(!arr || arr.length===0){ out.innerText = 'No entries'; return }
+        arr.forEach(e=>{
+          const d = new Date((e.timestamp||0)*1000).toISOString()
+          const el = document.createElement('div'); el.className='entry'
+          el.innerHTML = `<div><b>${d}</b> actor=${e.actor} field=${e.field}</div><div>reason=${String(e.reason)}</div><pre>${JSON.stringify({old:e.old_value,new:e.new_value},null,2)}</pre>`
+          out.appendChild(el)
+        })
+      }
+      document.getElementById('load').addEventListener('click', load)
+      document.getElementById('next').addEventListener('click', ()=>{ window.__hist_offset = (window.__hist_offset||0) + parseInt(document.getElementById('filter-limit').value||'50'); load() })
+      document.getElementById('prev').addEventListener('click', ()=>{ window.__hist_offset = Math.max(0, (window.__hist_offset||0) - parseInt(document.getElementById('filter-limit').value||'50')); load() })
+    </script>
+  </body>
+</html>
