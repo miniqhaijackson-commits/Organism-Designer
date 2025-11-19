@@ -31,6 +31,14 @@ def health():
 
 
 def _verify_admin(request: Request):
+    # Prefer short-lived session token
+    session = request.headers.get('x-admin-session')
+    if session:
+        ok, actor = db.verify_admin_session(session)
+        if ok:
+            return True, actor
+
+    # Fallback to environment master token (legacy)
     token = request.headers.get('x-admin-token')
     env = os.environ.get('JARVIS_ADMIN_TOKEN')
     if not env:
@@ -40,6 +48,34 @@ def _verify_admin(request: Request):
         return False, None
     actor = request.headers.get('x-admin-actor', 'admin')
     return True, actor
+
+
+
+@app.post('/api/admin/login')
+def admin_login(request: Request, payload: dict = Body(...)):
+    """Exchange a configured master token for a short-lived session token.
+
+    Payload: {"master_token": "...", "actor": "username", "ttl": 3600}
+    """
+    master = payload.get('master_token')
+    actor = payload.get('actor', 'admin')
+    ttl = int(payload.get('ttl', 3600))
+    env = os.environ.get('JARVIS_ADMIN_TOKEN')
+    if not env or master != env:
+        raise HTTPException(status_code=401, detail='invalid master token')
+    sess = db.create_admin_session(actor=actor, ttl_seconds=ttl)
+    return sess
+
+
+@app.post('/api/admin/logout')
+def admin_logout(request: Request):
+    session = request.headers.get('x-admin-session')
+    if not session:
+        raise HTTPException(status_code=400, detail='no session token provided')
+    ok = db.revoke_admin_session(session)
+    if not ok:
+        raise HTTPException(status_code=404, detail='session not found')
+    return {'revoked': True}
 
 
 @app.post("/projects", response_model=ProjectOut)

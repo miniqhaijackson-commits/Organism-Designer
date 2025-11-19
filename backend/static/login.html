@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Admin Login — J.A.R.V.I.S.</title>
+    <style>
+      body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:40px;background:#071023;color:#bfe6ff}
+      .card{background:#0b2140;padding:20px;border-radius:8px;max-width:600px}
+      input,button{padding:10px;margin:6px;font-size:14px}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>Admin Login</h2>
+      <p>Enter the master token to exchange for a short-lived admin session.</p>
+      <input id="token" placeholder="master token" style="width:100%" />
+      <div style="margin-top:12px">
+        <button id="login">Login & Go to Logs</button>
+        <button id="cancel">Back to UI</button>
+      </div>
+      <p style="font-size:12px;color:#9ec">The server will issue a short-lived session token stored in `localStorage`. Do not use shared browsers for admin access.</p>
+    </div>
+
+    <script>
+      document.getElementById('login').addEventListener('click', async ()=>{
+        const v = document.getElementById('token').value || ''
+        if(!v){alert('Enter master token');return}
+        try{
+          const res = await fetch('/api/admin/login', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({master_token: v})})
+          if(!res.ok){ const t = await res.text(); alert('Login failed: '+t); return }
+          const j = await res.json()
+          // store session token
+          localStorage.setItem('jarvis_admin_session', j.session_token)
+          window.location.href = '/ui/logs.html'
+        }catch(e){ alert('Login error: '+String(e)) }
+      })
+      document.getElementById('cancel').addEventListener('click', ()=>{
+        window.location.href = '/ui'
+      })
+    </script>
+  </body>
+</html>

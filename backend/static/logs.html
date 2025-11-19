@@ -12,18 +12,25 @@
   </head>
   <body>
     <h2>Audit Logs</h2>
-    <p>Paste admin token and click <b>Load</b>.</p>
+    <p>Provide a session token or <b>Login</b> to obtain one. Stored session tokens use `localStorage` under <code>jarvis_admin_session</code>.</p>
     <div>
-      <input id="token" placeholder="x-admin-token" style="width:60%" />
+      <input id="token" placeholder="session token or master token" style="width:60%" />
       <button id="load">Load Logs</button>
+      <button id="login">Login (exchange master)</button>
+      <button id="use-stored">Use stored session</button>
+      <button id="save-session">Save session</button>
+      <button id="logout">Logout session</button>
     </div>
     <div id="out"></div>
 
     <script>
       async function loadLogs(){
-        const token = document.getElementById('token').value;
-        if(!token){alert('Provide admin token');return}
-        const res = await fetch('/api/logs', {headers: {'x-admin-token': token}});
+        let token = document.getElementById('token').value;
+        if(!token){
+            token = localStorage.getItem('jarvis_admin_session') || '';
+          }
+          if(!token){ alert('Provide session token or login'); return }
+          const res = await fetch('/api/logs', {headers: {'x-admin-session': token}});
         if(!res.ok){
           const t = await res.text();
           document.getElementById('out').innerText = 'Error: ' + res.status + ' ' + t;
@@ -41,6 +48,38 @@
         })
       }
       document.getElementById('load').addEventListener('click', loadLogs);
+      document.getElementById('use-stored').addEventListener('click', ()=>{
+        const v = localStorage.getItem('jarvis_admin_session') || ''
+        document.getElementById('token').value = v
+      })
+      document.getElementById('save-session').addEventListener('click', ()=>{
+        const v = document.getElementById('token').value || ''
+        if(!v){ alert('No session to save'); return }
+        localStorage.setItem('jarvis_admin_session', v)
+        alert('session saved in localStorage')
+      })
+      document.getElementById('login').addEventListener('click', async ()=>{
+        const master = document.getElementById('token').value || ''
+        if(!master){ alert('Enter master token to exchange'); return }
+        try{
+          const res = await fetch('/api/admin/login', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({master_token: master})})
+          if(!res.ok){ const t = await res.text(); alert('Login failed: '+t); return }
+          const j = await res.json()
+          localStorage.setItem('jarvis_admin_session', j.session_token)
+          document.getElementById('token').value = j.session_token
+          alert('session acquired')
+        }catch(e){ alert('login error: '+String(e)) }
+      })
+      document.getElementById('logout').addEventListener('click', async ()=>{
+        const session = localStorage.getItem('jarvis_admin_session') || document.getElementById('token').value || ''
+        if(!session){ alert('no session to logout'); return }
+        try{
+          const res = await fetch('/api/admin/logout', {method:'POST', headers:{'x-admin-session': session}})
+          if(!res.ok){ const t = await res.text(); alert('Logout failed: '+t); return }
+          localStorage.removeItem('jarvis_admin_session')
+          alert('session revoked and cleared')
+        }catch(e){ alert('logout error: '+String(e)) }
+      })
     </script>
   </body>
 </html>
