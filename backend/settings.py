@@ -117,8 +117,8 @@ def get_audit_logs(limit: int = 100, offset: int = 0, actor: str | None = None, 
                 continue
             entries.append(e)
 
-    # newest first
-    entries = list(reversed(entries))
+    # order by timestamp newest first (robust to file ordering)
+    entries.sort(key=lambda e: int(e.get('timestamp', 0)), reverse=True)
 
     def keep(e):
         if actor and str(e.get('actor')) != str(actor):

@@ -186,6 +186,74 @@ def _ensure_admin_table(conn):
     )
 
 
+def _base64url_encode(b: bytes) -> str:
+    import base64
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode('ascii')
+
+
+def _base64url_decode(s: str) -> bytes:
+    import base64
+    rem = len(s) % 4
+    if rem:
+        s += '=' * (4 - rem)
+    return base64.urlsafe_b64decode(s.encode('ascii'))
+
+
+def _sign_hs256(message: bytes, key: bytes) -> bytes:
+    import hmac, hashlib
+    return hmac.new(key, message, hashlib.sha256).digest()
+
+
+def _make_jwt(sid: str, actor: str, expires_at: int) -> str:
+    """Create a simple JWT-like token signed with HMAC-SHA256.
+
+    The payload contains: sid, actor, exp.
+    This function requires env var `JARVIS_SESSION_KEY` to be set.
+    """
+    import json, os
+    key = os.environ.get('JARVIS_SESSION_KEY')
+    if not key:
+        raise RuntimeError('JARVIS_SESSION_KEY not configured')
+    header = {'alg': 'HS256', 'typ': 'JWT'}
+    payload = {'sid': sid, 'actor': actor, 'exp': int(expires_at)}
+    seg0 = _base64url_encode(json.dumps(header, separators=(',', ':'), ensure_ascii=False).encode('utf-8'))
+    seg1 = _base64url_encode(json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode('utf-8'))
+    signing_input = (seg0 + '.' + seg1).encode('ascii')
+    sig = _sign_hs256(signing_input, key.encode('utf-8'))
+    seg2 = _base64url_encode(sig)
+    return seg0 + '.' + seg1 + '.' + seg2
+
+
+def _verify_jwt(token: str) -> tuple[bool, dict | None]:
+    """Verify the simple JWT and return (ok, payload)"""
+    import json, os, time
+    key = os.environ.get('JARVIS_SESSION_KEY')
+    if not key:
+        return False, None
+    parts = token.split('.')
+    if len(parts) != 3:
+        return False, None
+    seg0, seg1, seg2 = parts
+    try:
+        signing_input = (seg0 + '.' + seg1).encode('ascii')
+        expected = _sign_hs256(signing_input, key.encode('utf-8'))
+        sig = _base64url_decode(seg2)
+        if not hmac_compare(sig, expected):
+            return False, None
+        payload_json = _base64url_decode(seg1).decode('utf-8')
+        payload = json.loads(payload_json)
+        if int(payload.get('exp', 0)) < int(time.time()):
+            return False, None
+        return True, payload
+    except Exception:
+        return False, None
+
+
+def hmac_compare(a: bytes, b: bytes) -> bool:
+    import hmac
+    return hmac.compare_digest(a, b)
+
+
 def create_admin_session(actor: str, ttl_seconds: int = 3600) -> dict:
     """Create a short-lived admin session token and return metadata."""
     import secrets, time
@@ -198,12 +266,45 @@ def create_admin_session(actor: str, ttl_seconds: int = 3600) -> dict:
     cur.execute("INSERT INTO admin_sessions (session_token, actor, expires_at) VALUES (?, ?, ?)", (token, actor, expires))
     conn.commit()
     conn.close()
-    return {"session_token": token, "actor": actor, "expires_at": expires}
+
+    # If a session signing key is configured, also emit a signed JWT for convenience
+    import os
+    jwt_val = None
+    if os.environ.get('JARVIS_SESSION_KEY'):
+        try:
+            jwt_val = _make_jwt(token, actor, expires)
+        except Exception:
+            jwt_val = None
+
+    out = {"session_token": token, "actor": actor, "expires_at": expires}
+    if jwt_val:
+        out['jwt'] = jwt_val
+    return out
 
 
 def verify_admin_session(session_token: str) -> tuple[bool, str | None]:
     """Return (True, actor) if session is valid and not expired."""
     import time
+
+    # If the token looks like a JWT (contains '.'), try JWT verification first
+    if isinstance(session_token, str) and '.' in session_token:
+        ok, payload = _verify_jwt(session_token)
+        if ok:
+            # ensure session id present in DB and not expired
+            sid = payload.get('sid')
+            if not sid:
+                return False, None
+            conn = get_conn()
+            _ensure_admin_table(conn)
+            cur = conn.cursor()
+            cur.execute("SELECT session_token, actor, expires_at FROM admin_sessions WHERE session_token=?", (sid,))
+            row = cur.fetchone()
+            conn.close()
+            if not row:
+                return False, None
+            if int(row['expires_at']) < int(time.time()):
+                return False, None
+            return True, row['actor']
 
     conn = get_conn()
     _ensure_admin_table(conn)
@@ -241,6 +342,23 @@ def cleanup_expired_admin_sessions() -> int:
     conn.commit()
     conn.close()
     return removed
+
+
+def list_admin_sessions(limit: int = 100, offset: int = 0):
+    """Return non-expired admin sessions (most recent first)."""
+    import time
+    now = int(time.time())
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT session_token, actor, expires_at, created_at FROM admin_sessions WHERE expires_at>? ORDER BY created_at DESC LIMIT ? OFFSET ?", (now, limit, offset))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def _row_to_session(row):
+    return {"session_token": row['session_token'], 'actor': row['actor'], 'expires_at': row['expires_at'], 'created_at': row.get('created_at')}
 
 
 def add_project_file(project_id: int, filename: str, content: bytes) -> str:

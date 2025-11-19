@@ -78,6 +78,15 @@ def admin_logout(request: Request):
     return {'revoked': True}
 
 
+@app.get('/api/admin/sessions')
+def admin_list_sessions(request: Request, limit: int = 100, offset: int = 0):
+    # require admin (session or master) to list sessions
+    ok, _ = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    return db.list_admin_sessions(limit=limit, offset=offset)
+
+
 @app.post("/projects", response_model=ProjectOut)
 def create_project(p: ProjectCreate):
     project_id = db.create_project(p.title, p.description or "")
@@ -215,6 +224,12 @@ def _session_cleanup_loop(interval: int = 300):
             try:
                 try:
                     removed = db.cleanup_expired_admin_sessions()
+                    # log cleanup into audit log for traceability
+                    try:
+                        import backend.settings as settings_mod_local
+                        settings_mod_local.append_audit_entry('system', 'session_cleanup', old_value=0, new_value=removed, reason='periodic cleanup')
+                    except Exception:
+                        pass
                 except Exception:
                     removed = 0
             except Exception:
