@@ -184,6 +184,10 @@ def _ensure_admin_table(conn):
     cur.execute(
         "CREATE TABLE IF NOT EXISTS admin_sessions (session_token TEXT PRIMARY KEY, actor TEXT, expires_at INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
     )
+    # table for revoked tokens (support stateless revocation)
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS revoked_tokens (token TEXT PRIMARY KEY, actor TEXT, reason TEXT, revoked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
 
 
 def _base64url_encode(b: bytes) -> str:
@@ -294,6 +298,9 @@ def verify_admin_session(session_token: str) -> tuple[bool, str | None]:
             sid = payload.get('sid')
             if not sid:
                 return False, None
+            # Check revocation list first
+            if is_token_revoked(sid):
+                return False, None
             conn = get_conn()
             _ensure_admin_table(conn)
             cur = conn.cursor()
@@ -328,6 +335,48 @@ def revoke_admin_session(session_token: str) -> bool:
     conn.commit()
     conn.close()
     return bool(changed)
+
+
+def revoke_token(token: str, actor: str | None = None, reason: str | None = None) -> bool:
+    """Mark a token as revoked (for JWT/stateless flows).
+
+    Returns True if inserted (or already present), False on error.
+    """
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    try:
+        cur.execute("INSERT OR REPLACE INTO revoked_tokens (token, actor, reason) VALUES (?, ?, ?)", (token, actor, reason))
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
+def is_token_revoked(token: str) -> bool:
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT token FROM revoked_tokens WHERE token=?", (token,))
+    row = cur.fetchone()
+    conn.close()
+    return bool(row)
+
+
+def revoke_all_for_actor(actor: str) -> int:
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM admin_sessions WHERE actor=?", (actor,))
+    removed_stateful = cur.rowcount
+    # Mark any existing sessions in DB as revoked as well for audit
+    cur.execute("INSERT INTO revoked_tokens (token, actor, reason) SELECT session_token, actor, 'revoke_all' FROM admin_sessions WHERE actor=?", (actor,))
+    conn.commit()
+    conn.close()
+    return removed_stateful
 
 
 def cleanup_expired_admin_sessions() -> int:

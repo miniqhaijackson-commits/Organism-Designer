@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Admin Sessions — J.A.R.V.I.S.</title>
+    <style>
+      body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:20px}
+      table{width:100%;border-collapse:collapse}
+      th,td{padding:8px;border-bottom:1px solid #eee}
+      button{padding:6px}
+    </style>
+  </head>
+  <body>
+    <h2>Active Admin Sessions</h2>
+    <p>Requires admin session or master token.</p>
+    <div>
+      <input id="token" placeholder="session token" style="width:60%" />
+      <button id="load">Load Sessions</button>
+    </div>
+    <table>
+      <thead><tr><th>Session</th><th>Actor</th><th>Expires</th><th>Actions</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <script>
+      async function load(){
+        const token = document.getElementById('token').value || localStorage.getItem('jarvis_admin_session') || ''
+        if(!token){ alert('provide session'); return }
+        const res = await fetch('/api/admin/sessions', {headers: {'x-admin-session': token}})
+        if(!res.ok){ alert('failed to load sessions'); return }
+        const arr = await res.json()
+        const tb = document.getElementById('rows')
+        tb.innerHTML = ''
+        arr.forEach(s=>{
+          const tr = document.createElement('tr')
+          const ex = new Date(s.expires_at*1000).toISOString()
+          tr.innerHTML = `<td>${s.session_token}</td><td>${s.actor}</td><td>${ex}</td><td><button data-token='${s.session_token}'>Revoke</button></td>`
+          tb.appendChild(tr)
+        })
+        document.querySelectorAll('button[data-token]').forEach(b=>{
+          b.addEventListener('click', async (ev)=>{
+            const t = b.getAttribute('data-token')
+            if(!confirm('Revoke this session?')) return
+            const r = await fetch('/api/admin/sessions/' + encodeURIComponent(t), {method:'DELETE', headers: {'x-admin-session': token}})
+            if(r.ok){ alert('revoked'); load() } else { alert('revoke failed') }
+          })
+        })
+      }
+      document.getElementById('load').addEventListener('click', load)
+    </script>
+  </body>
+</html>

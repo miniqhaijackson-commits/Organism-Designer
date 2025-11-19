@@ -87,6 +87,54 @@ def admin_list_sessions(request: Request, limit: int = 100, offset: int = 0):
     return db.list_admin_sessions(limit=limit, offset=offset)
 
 
+@app.delete('/api/admin/sessions/{session_token}')
+def admin_revoke_session(request: Request, session_token: str):
+    ok, _ = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+
+    # if token looks like JWT, mark as revoked; otherwise delete stateful session
+    if '.' in session_token:
+        # attempt to verify then revoke by sid if possible
+        # extract sid by verifying JWT (but keep call minimal)
+        ok_jwt, payload = db._verify_jwt(session_token)
+        if not ok_jwt:
+            # if not valid JWT, still store raw token in revoke list
+            db.revoke_token(session_token, reason='manual_revoke')
+            return {'revoked': True}
+        sid = payload.get('sid')
+        if sid:
+            db.revoke_token(sid, actor=payload.get('actor'), reason='manual_revoke')
+            return {'revoked': True}
+        db.revoke_token(session_token, reason='manual_revoke')
+        return {'revoked': True}
+
+    # otherwise try to remove from stateful sessions
+    okr = db.revoke_admin_session(session_token)
+    if okr:
+        # also mark token as revoked for good measure
+        db.revoke_token(session_token, reason='manual_revoke')
+        return {'revoked': True}
+    raise HTTPException(status_code=404, detail='session not found')
+
+
+@app.post('/api/admin/revoke_actor')
+def admin_revoke_actor(request: Request, payload: dict = Body(...)):
+    ok, _ = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    actor = payload.get('actor')
+    if not actor:
+        raise HTTPException(status_code=400, detail='actor required')
+    removed = db.revoke_all_for_actor(actor)
+    # append audit entry
+    try:
+        settings_mod.append_audit_entry('system', 'revoke_actor', old_value=0, new_value=removed, reason=f'revoke_all_for_{actor}')
+    except Exception:
+        pass
+    return {'removed_stateful': removed}
+
+
 @app.post("/projects", response_model=ProjectOut)
 def create_project(p: ProjectCreate):
     project_id = db.create_project(p.title, p.description or "")
