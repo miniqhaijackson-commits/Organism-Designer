@@ -1,0 +1,2 @@
+# Minimal requirements for the local test suite
+# (all code uses only the Python standard library; no external deps needed)

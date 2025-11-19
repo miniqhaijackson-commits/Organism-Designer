@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>J.A.R.V.I.S. Audit Logs</title>
+    <style>
+      body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:20px}
+      textarea{width:100%;height:300px}
+      input,button{padding:8px;margin:4px}
+      .entry{border-bottom:1px solid #eee;padding:8px 0}
+    </style>
+  </head>
+  <body>
+    <h2>Audit Logs</h2>
+    <p>Paste admin token and click <b>Load</b>.</p>
+    <div>
+      <input id="token" placeholder="x-admin-token" style="width:60%" />
+      <button id="load">Load Logs</button>
+    </div>
+    <div id="out"></div>
+
+    <script>
+      async function loadLogs(){
+        const token = document.getElementById('token').value;
+        if(!token){alert('Provide admin token');return}
+        const res = await fetch('/api/logs', {headers: {'x-admin-token': token}});
+        if(!res.ok){
+          const t = await res.text();
+          document.getElementById('out').innerText = 'Error: ' + res.status + ' ' + t;
+          return;
+        }
+        const logs = await res.json();
+        const out = document.getElementById('out');
+        out.innerHTML = '';
+        if(!logs || logs.length===0){ out.innerText = 'No logs'; return }
+        logs.forEach(l => {
+          const d = new Date(l.timestamp*1000).toISOString();
+          const el = document.createElement('div'); el.className='entry';
+          el.innerHTML = `<div><b>${d}</b> actor=${l.actor} field=${l.field}</div><div>reason=${String(l.reason)}</div><pre>${JSON.stringify({old:l.old_value,new:l.new_value},null,2)}</pre>`;
+          out.appendChild(el);
+        })
+      }
+      document.getElementById('load').addEventListener('click', loadLogs);
+    </script>
+  </body>
+</html>
