@@ -96,20 +96,41 @@ def append_audit_entry(actor: str, field: str, old_value, new_value, reason: str
         f.write(json.dumps(entry, ensure_ascii=False) + '\n')
 
 
-def get_audit_logs(limit: int = 100):
-    """Return latest `limit` audit log entries (most recent first)."""
+def get_audit_logs(limit: int = 100, offset: int = 0, actor: str | None = None, field: str | None = None, since: int | None = None, until: int | None = None):
+    """Return audit log entries with basic filtering and pagination.
+
+    - `limit` and `offset` implement pagination (most recent first ordering).
+    - `actor` and `field` filter by exact match.
+    - `since` and `until` are Unix timestamps (seconds) to filter time range inclusive.
+    """
     if not LOG_PATH.exists():
         return []
-    lines = []
+    entries = []
     with LOG_PATH.open('r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                lines.append(json.loads(line))
+                e = json.loads(line)
             except Exception:
-                # skip malformed lines
                 continue
-    # return most recent first
-    return list(reversed(lines))[:limit]
+            entries.append(e)
+
+    # newest first
+    entries = list(reversed(entries))
+
+    def keep(e):
+        if actor and str(e.get('actor')) != str(actor):
+            return False
+        if field and str(e.get('field')) != str(field):
+            return False
+        ts = int(e.get('timestamp', 0))
+        if since is not None and ts < int(since):
+            return False
+        if until is not None and ts > int(until):
+            return False
+        return True
+
+    filtered = [e for e in entries if keep(e)]
+    return filtered[offset: offset + limit]

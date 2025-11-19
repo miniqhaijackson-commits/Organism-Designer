@@ -21,16 +21,45 @@
       <button id="save-session">Save session</button>
       <button id="logout">Logout session</button>
     </div>
+
+    <div style="margin-top:12px" class="card">
+      <label>Actor: <input id="filter-actor" placeholder="actor" /></label>
+      <label>Field: <input id="filter-field" placeholder="field" /></label>
+      <label>Since: <input id="filter-since" type="datetime-local" /></label>
+      <label>Until: <input id="filter-until" type="datetime-local" /></label>
+      <label>Limit: <input id="filter-limit" type="number" value="50" style="width:80px"/></label>
+      <button id="prev">Prev</button>
+      <button id="next">Next</button>
+    </div>
+
     <div id="out"></div>
 
     <script>
       async function loadLogs(){
-        let token = document.getElementById('token').value;
-        if(!token){
+          let token = document.getElementById('token').value;
+          if(!token){
             token = localStorage.getItem('jarvis_admin_session') || '';
           }
           if(!token){ alert('Provide session token or login'); return }
-          const res = await fetch('/api/logs', {headers: {'x-admin-session': token}});
+
+          // build query params from filters
+          const actor = document.getElementById('filter-actor').value || null
+          const field = document.getElementById('filter-field').value || null
+          const limit = parseInt(document.getElementById('filter-limit').value || '50')
+          const sinceEl = document.getElementById('filter-since').value
+          const untilEl = document.getElementById('filter-until').value
+          const since = sinceEl ? Math.floor(new Date(sinceEl).getTime()/1000) : null
+          const until = untilEl ? Math.floor(new Date(untilEl).getTime()/1000) : null
+
+          const params = new URLSearchParams()
+          params.set('limit', String(limit))
+          params.set('offset', String(window.__jarvis_offset || 0))
+          if(actor) params.set('actor', actor)
+          if(field) params.set('field', field)
+          if(since) params.set('since', String(since))
+          if(until) params.set('until', String(until))
+
+          const res = await fetch('/api/logs?' + params.toString(), {headers: {'x-admin-session': token}});
         if(!res.ok){
           const t = await res.text();
           document.getElementById('out').innerText = 'Error: ' + res.status + ' ' + t;
@@ -66,7 +95,9 @@
           if(!res.ok){ const t = await res.text(); alert('Login failed: '+t); return }
           const j = await res.json()
           localStorage.setItem('jarvis_admin_session', j.session_token)
-          document.getElementById('token').value = j.session_token
+          // clear master token input to avoid accidental leak
+          document.getElementById('token').value = ''
+          document.getElementById('token').placeholder = 'session acquired'
           alert('session acquired')
         }catch(e){ alert('login error: '+String(e)) }
       })
@@ -79,6 +110,18 @@
           localStorage.removeItem('jarvis_admin_session')
           alert('session revoked and cleared')
         }catch(e){ alert('logout error: '+String(e)) }
+      })
+
+      // pagination
+      document.getElementById('next').addEventListener('click', ()=>{
+        const limit = parseInt(document.getElementById('filter-limit').value || '50')
+        window.__jarvis_offset = (window.__jarvis_offset || 0) + limit
+        loadLogs()
+      })
+      document.getElementById('prev').addEventListener('click', ()=>{
+        const limit = parseInt(document.getElementById('filter-limit').value || '50')
+        window.__jarvis_offset = Math.max(0, (window.__jarvis_offset || 0) - limit)
+        loadLogs()
       })
     </script>
   </body>
