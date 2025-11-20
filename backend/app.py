@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Body
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Body, Depends
+from contextlib import asynccontextmanager
 from fastapi.responses import JSONResponse
 import os
 import time
@@ -13,16 +14,39 @@ from jarvis import voice
 from fastapi.responses import FileResponse
 
 
-app = FastAPI(title="J.A.R.V.I.S Backend (Prototype)")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # initialize DB and background loops
+    db.init_db()
+    try:
+        interval = int(os.environ.get("JARVIS_AUTOSAVE_INTERVAL", "60"))
+    except Exception:
+        interval = 60
+    _autosave_loop(interval=interval)
+    try:
+        cleanup_interval = int(os.environ.get('JARVIS_SESSION_CLEANUP_INTERVAL', '300'))
+    except Exception:
+        cleanup_interval = 300
+    _session_cleanup_loop(interval=cleanup_interval)
+    try:
+        revoked_interval = int(os.environ.get('JARVIS_REVOKED_CLEANUP_INTERVAL', '3600'))
+    except Exception:
+        revoked_interval = 3600
+    try:
+        retention = int(os.environ.get('JARVIS_REVOKE_RETENTION_SECONDS', str(60 * 60 * 24 * 30)))
+    except Exception:
+        retention = 60 * 60 * 24 * 30
+    _revoked_cleanup_loop(interval=revoked_interval, retention=retention)
+    yield
+
+
+app = FastAPI(title="J.A.R.V.I.S Backend (Prototype)", lifespan=lifespan)
 
 # serve a minimal static UI
 app.mount("/ui", StaticFiles(directory="backend/static", html=True), name="ui")
 
 
-@app.on_event("startup")
-def startup_event():
-    # Ensure database is initialized on startup
-    db.init_db()
+
 
 
 @app.get("/health")
@@ -31,12 +55,21 @@ def health():
 
 
 def _verify_admin(request: Request):
-    # Prefer short-lived session token
+    # Prefer short-lived session token from header or cookie
     session = request.headers.get('x-admin-session')
+    if not session:
+        session = request.cookies.get('jarvis_admin_session')
     if session:
         ok, actor = db.verify_admin_session(session)
         if ok:
-            return True, actor
+            # Check RBAC: actor must have role 'admin' (unless master token used)
+            role = db.get_user_role(actor)
+            if role == 'admin' or os.environ.get('JARVIS_ADMIN_TOKEN') and request.headers.get('x-admin-token') == os.environ.get('JARVIS_ADMIN_TOKEN'):
+                return True, actor
+            # If no role assigned, default to admin for compatibility
+            if role is None:
+                return True, actor
+            return False, None
 
     # Fallback to environment master token (legacy)
     token = request.headers.get('x-admin-token')
@@ -49,6 +82,18 @@ def _verify_admin(request: Request):
     actor = request.headers.get('x-admin-actor', 'admin')
     return True, actor
 
+
+def check_role(min_role: str = 'admin'):
+    """Dependency factory returning a FastAPI dependency that enforces a minimum role."""
+    def _dep(request: Request):
+        ok, actor = _verify_admin(request)
+        if not ok:
+            raise HTTPException(status_code=401, detail='admin required')
+        role = db.get_user_role(actor) or 'admin'
+        if min_role == 'admin' and role != 'admin':
+            raise HTTPException(status_code=403, detail='insufficient privileges')
+        return {'actor': actor, 'role': role}
+    return _dep
 
 
 @app.post('/api/admin/login')
@@ -64,18 +109,32 @@ def admin_login(request: Request, payload: dict = Body(...)):
     if not env or master != env:
         raise HTTPException(status_code=401, detail='invalid master token')
     sess = db.create_admin_session(actor=actor, ttl_seconds=ttl)
-    return sess
+    # set HttpOnly cookie with session token or jwt if available
+    from fastapi import Response
+    cookie_val = sess.get('jwt') or sess.get('session_token')
+    resp = Response(content='{"ok": true}', media_type='application/json')
+    secure = bool(os.environ.get('JARVIS_SECURE_COOKIES', '0') == '1')
+    resp.set_cookie('jarvis_admin_session', cookie_val, httponly=True, secure=secure, samesite='lax', max_age=ttl, path='/')
+    return resp
 
 
 @app.post('/api/admin/logout')
 def admin_logout(request: Request):
-    session = request.headers.get('x-admin-session')
+    # support session from cookie or header
+    session = request.headers.get('x-admin-session') or request.cookies.get('jarvis_admin_session')
     if not session:
         raise HTTPException(status_code=400, detail='no session token provided')
     ok = db.revoke_admin_session(session)
-    if not ok:
-        raise HTTPException(status_code=404, detail='session not found')
-    return {'revoked': True}
+    # also mark revoked for stateless tokens
+    try:
+        db.revoke_token(session, reason='logout')
+    except Exception:
+        pass
+    from fastapi import Response
+    resp = Response(content='{"revoked": true}', media_type='application/json')
+    # delete cookie
+    resp.delete_cookie('jarvis_admin_session', path='/')
+    return resp
 
 
 @app.get('/api/admin/sessions')
@@ -164,8 +223,74 @@ def admin_session_history(request: Request, limit: int = 100, offset: int = 0, a
     return settings_mod.get_audit_logs(limit=limit, offset=offset, actor=actor, field=field, since=since, until=until)
 
 
+@app.get('/api/admin/users')
+def admin_list_users(request: Request, limit: int = 100, offset: int = 0):
+    ok, _ = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    return db.list_users(limit=limit, offset=offset)
+
+
+@app.post('/api/admin/users')
+def admin_create_user(request: Request, payload: dict = Body(...)):
+    ok, actor = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    username = payload.get('actor')
+    role = payload.get('role') or 'admin'
+    if not username:
+        raise HTTPException(status_code=400, detail='actor required')
+    created = db.create_user(username, role)
+    try:
+        settings_mod.append_audit_entry(actor or 'admin', 'create_user', old_value=None, new_value={'actor': username, 'role': role}, reason='rbac create')
+    except Exception:
+        pass
+    return {'created': True, 'actor': username, 'role': role}
+
+
+@app.delete('/api/admin/users/{actor}')
+def admin_delete_user(request: Request, actor: str):
+    ok, user = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    removed = db.delete_user(actor)
+    try:
+        settings_mod.append_audit_entry(user or 'admin', 'delete_user', old_value={'actor': actor}, new_value=None, reason='rbac delete')
+    except Exception:
+        pass
+    if removed:
+        return {'deleted': True, 'actor': actor}
+    raise HTTPException(status_code=404, detail='user not found')
+
+
+@app.delete('/api/admin/users/{actor}')
+def admin_delete_user(request: Request, actor: str):
+    ok, admin_actor = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    removed = db.delete_user(actor)
+    if removed:
+        try:
+            settings_mod.append_audit_entry(admin_actor or 'admin', 'delete_user', old_value={'actor': actor}, new_value=None, reason='rbac delete')
+        except Exception:
+            pass
+        return {'deleted': True, 'actor': actor}
+    raise HTTPException(status_code=404, detail='user not found')
+
+
+@app.get('/api/admin/metrics')
+def admin_metrics(request: Request):
+    ok, _ = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail='admin required')
+    active = db.count_active_sessions()
+    revoked = db.count_revoked_tokens()
+    users = len(db.list_users(limit=10000, offset=0))
+    return {'active_sessions': active, 'revoked_tokens': revoked, 'users': users}
+
+
 @app.post("/projects", response_model=ProjectOut)
-def create_project(p: ProjectCreate):
+async def create_project(request: Request, p: ProjectCreate, _auth=Depends(check_role('admin'))):
     project_id = db.create_project(p.title, p.description or "")
     proj = db.get_project(project_id)
     return proj
@@ -233,7 +358,7 @@ def get_logs(request: Request, limit: int = 200, offset: int = 0, actor: str | N
 
 
 @app.post("/projects/{project_id}/files")
-def upload_project_file(project_id: int, file: UploadFile = File(...)):
+async def upload_project_file(request: Request, project_id: int, file: UploadFile = File(...), _auth=Depends(check_role('admin'))):
     data = file.file.read()
     path = db.add_project_file(project_id, file.filename, data)
     return {"path": path, "filename": file.filename}
@@ -251,7 +376,7 @@ def create_pairing(device_name: str = Form(...)):
 
 
 @app.post("/projects/{project_id}/snapshot")
-def create_snapshot(project_id: int):
+async def create_snapshot(request: Request, project_id: int, _auth=Depends(check_role('admin'))):
     try:
         sid = db.create_snapshot(project_id)
         return {"snapshot_id": sid}
@@ -265,10 +390,10 @@ def list_project_snapshots(project_id: int):
 
 
 @app.post("/snapshots/{snapshot_id}/restore")
-def restore_snapshot(snapshot_id: int):
+async def restore_snapshot(request: Request, snapshot_id: int, _auth=Depends(check_role('admin'))):
     ok = db.restore_snapshot(snapshot_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Snapshot not found")
+        raise HTTPException(status_code=404, detail='Snapshot not found')
     return {"restored": True}
 
 
@@ -341,33 +466,7 @@ def _session_cleanup_loop(interval: int = 300):
     t.start()
 
 
-@app.on_event("startup")
-def startup_event():
-    # Ensure database is initialized on startup
-    db.init_db()
-    # start autosave loop (interval configurable via env var)
-    import os
-    try:
-        interval = int(os.environ.get("JARVIS_AUTOSAVE_INTERVAL", "60"))
-    except Exception:
-        interval = 60
-    _autosave_loop(interval=interval)
-    # start session cleanup loop (remove expired admin sessions)
-    try:
-        cleanup_interval = int(os.environ.get('JARVIS_SESSION_CLEANUP_INTERVAL', '300'))
-    except Exception:
-        cleanup_interval = 300
-    _session_cleanup_loop(interval=cleanup_interval)
-    # start revoked-token cleanup loop (configurable retention and interval)
-    try:
-        revoked_interval = int(os.environ.get('JARVIS_REVOKED_CLEANUP_INTERVAL', '3600'))
-    except Exception:
-        revoked_interval = 3600
-    try:
-        retention = int(os.environ.get('JARVIS_REVOKE_RETENTION_SECONDS', str(60 * 60 * 24 * 30)))
-    except Exception:
-        retention = 60 * 60 * 24 * 30
-    _revoked_cleanup_loop(interval=revoked_interval, retention=retention)
+# lifespan handler sets up DB and background loops (defined earlier)
 
 
 @app.post("/transcribe")
@@ -379,6 +478,43 @@ def transcribe_audio(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"text": text}
+
+
+@app.get('/api/voice/status')
+def voice_status():
+    """Return status information about local STT/TTS capability."""
+    info = {'vosk_installed': False, 'vosk_model_present': False, 'pyttsx3_installed': False}
+    try:
+        import vosk  # type: ignore
+        info['vosk_installed'] = True
+    except Exception:
+        info['vosk_installed'] = False
+    try:
+        info['vosk_model_present'] = bool(voice.MODEL_DIR.exists())
+    except Exception:
+        info['vosk_model_present'] = False
+    try:
+        import pyttsx3  # type: ignore
+        info['pyttsx3_installed'] = True
+    except Exception:
+        info['pyttsx3_installed'] = False
+    return info
+
+
+@app.get('/api/voice/status')
+def voice_status():
+    """Return presence of VOSK model and availability of pyttsx3."""
+    model_present = False
+    try:
+        model_present = voice.MODEL_DIR.exists()
+    except Exception:
+        model_present = False
+    tts_ok = True
+    try:
+        import pyttsx3  # noqa: F401
+    except Exception:
+        tts_ok = False
+    return {'vosk_model_present': bool(model_present), 'pyttsx3_available': bool(tts_ok)}
 
 
 @app.post("/tts")

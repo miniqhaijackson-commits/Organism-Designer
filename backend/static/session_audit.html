@@ -12,7 +12,7 @@
   <body>
     <h2>Revoked Tokens Audit</h2>
     <div>
-      <input id="token" placeholder="session token" style="width:60%" />
+      <input id="token" placeholder="(optional) manual token for header auth" style="width:60%" />
       <button id="load">Load Audit</button>
     </div>
     <table>
@@ -21,9 +21,12 @@
     </table>
     <script>
       async function load(){
-        const token = document.getElementById('token').value || localStorage.getItem('jarvis_admin_session') || ''
-        if(!token){ alert('provide session'); return }
-        const res = await fetch('/api/admin/session_audit?limit=100', {headers: {'x-admin-session': token}})
+        const token = document.getElementById('token').value || ''
+        const useHeader = !!token
+        if(!useHeader){ /* rely on cookie */ }
+        const opts = {}
+        if(useHeader){ opts.headers = {'x-admin-session': token} } else { opts.credentials = 'same-origin' }
+        const res = await fetch('/api/admin/session_audit?limit=100', opts)
         if(!res.ok){ alert('failed to load'); return }
         const arr = await res.json()
         const tb = document.getElementById('rows')

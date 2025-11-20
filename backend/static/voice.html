@@ -1,0 +1,69 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Voice — J.A.R.V.I.S.</title>
+    <style>body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:20px} button{padding:8px;margin:6px}</style>
+  </head>
+  <body>
+    <h2>Voice — Transcribe & TTS</h2>
+    <div>
+      <button id="start">Start Recording (5s)</button>
+      <button id="stop" disabled>Stop</button>
+      <button id="transcribe">Transcribe</button>
+      <button id="playback">Synthesize Text</button>
+    </div>
+    <div>
+      <p>Status: <span id="status">idle</span></p>
+      <textarea id="txt" rows="6" cols="80" placeholder="Transcribed text will appear here"></textarea>
+    </div>
+    <script>
+      let rec, chunks = [], mediaStream
+      document.getElementById('start').addEventListener('click', async ()=>{
+        try{
+          mediaStream = await navigator.mediaDevices.getUserMedia({audio:true})
+          rec = new MediaRecorder(mediaStream)
+          rec.ondataavailable = e => chunks.push(e.data)
+          rec.onstop = ()=>{
+            document.getElementById('status').innerText = 'recording stopped'
+          }
+          chunks = []
+          rec.start()
+          document.getElementById('status').innerText = 'recording'
+          document.getElementById('stop').disabled = false
+        }catch(e){ alert('microphone error: '+String(e)) }
+      })
+      document.getElementById('stop').addEventListener('click', ()=>{
+        if(rec && rec.state==='recording') rec.stop()
+        document.getElementById('stop').disabled = true
+      })
+      document.getElementById('transcribe').addEventListener('click', async ()=>{
+        if(chunks.length===0){ alert('no recording available'); return }
+        const blob = new Blob(chunks, {type:'audio/wav'})
+        const fd = new FormData(); fd.append('file', blob, 'rec.wav')
+        document.getElementById('status').innerText = 'sending for transcription...'
+        try{
+          const res = await fetch('/transcribe', {method:'POST', body: fd})
+          const j = await res.json()
+          if(res.ok){ document.getElementById('txt').value = j.text || '' }
+          else { alert('transcribe failed: '+(j.detail||JSON.stringify(j))) }
+        }catch(e){ alert('transcribe error: '+String(e)) }
+        document.getElementById('status').innerText = 'idle'
+      })
+      document.getElementById('playback').addEventListener('click', async ()=>{
+        const t = document.getElementById('txt').value || ''
+        if(!t){ alert('no text to synthesize'); return }
+        const form = new FormData(); form.append('text', t)
+        document.getElementById('status').innerText = 'synthesizing...'
+        try{
+          const res = await fetch('/tts', {method:'POST', body: form})
+          if(!res.ok){ const j = await res.json(); alert('tts failed: '+JSON.stringify(j)); document.getElementById('status').innerText='idle'; return }
+          const blob = await res.blob()
+          const url = URL.createObjectURL(blob)
+          const a = new Audio(url); a.play()
+        }catch(e){ alert('tts error: '+String(e)) }
+        document.getElementById('status').innerText = 'idle'
+      })
+    </script>
+  </body>
+</html>

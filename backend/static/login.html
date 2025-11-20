@@ -18,7 +18,7 @@
         <button id="login">Login & Go to Logs</button>
         <button id="cancel">Back to UI</button>
       </div>
-      <p style="font-size:12px;color:#9ec">The server will issue a short-lived session token stored in `localStorage`. Do not use shared browsers for admin access.</p>
+      <p style="font-size:12px;color:#9ec">The server will issue a short-lived HttpOnly session cookie. Do not use shared browsers for admin access. The cookie cannot be read by JavaScript.</p>
     </div>
 
     <script>
@@ -28,11 +28,8 @@
         try{
           const res = await fetch('/api/admin/login', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({master_token: v})})
           if(!res.ok){ const t = await res.text(); alert('Login failed: '+t); return }
-          const j = await res.json()
-          // store session token only; clear the master token input immediately
-          localStorage.setItem('jarvis_admin_session', j.session_token)
+          // Server sets HttpOnly cookie; clear master input and redirect to logs
           document.getElementById('token').value = ''
-          // redirect to logs
           window.location.href = '/ui/logs.html'
         }catch(e){ alert('Login error: '+String(e)) }
       })

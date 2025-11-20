@@ -12,13 +12,11 @@
   </head>
   <body>
     <h2>Audit Logs</h2>
-    <p>Provide a session token or <b>Login</b> to obtain one. Stored session tokens use `localStorage` under <code>jarvis_admin_session</code>.</p>
+    <p>Login to obtain a short-lived admin session (HttpOnly cookie). You may optionally provide a manual token for API header-based access.</p>
     <div>
-      <input id="token" placeholder="session token or master token" style="width:60%" />
+      <input id="token" placeholder="(optional) manual token for header auth" style="width:60%" />
       <button id="load">Load Logs</button>
       <button id="login">Login (exchange master)</button>
-      <button id="use-stored">Use stored session</button>
-      <button id="save-session">Save session</button>
       <button id="logout">Logout session</button>
     </div>
 
@@ -36,11 +34,12 @@
 
     <script>
       async function loadLogs(){
-          let token = document.getElementById('token').value;
-          if(!token){
-            token = localStorage.getItem('jarvis_admin_session') || '';
+          // If a manual token is provided, use header-based auth. Otherwise rely on the browser cookie set by login.
+          let token = document.getElementById('token').value || '';
+          const useHeader = !!token
+          if(!useHeader){
+            // no manual token; rely on cookie (same-origin fetch will send it)
           }
-          if(!token){ alert('Provide session token or login'); return }
 
           // build query params from filters
           const actor = document.getElementById('filter-actor').value || null
@@ -59,7 +58,14 @@
           if(since) params.set('since', String(since))
           if(until) params.set('until', String(until))
 
-          const res = await fetch('/api/logs?' + params.toString(), {headers: {'x-admin-session': token}});
+          const fetchOpts = {}
+          if(useHeader){
+            fetchOpts.headers = {'x-admin-session': token}
+          } else {
+            // ensure same-origin cookies are sent
+            fetchOpts.credentials = 'same-origin'
+          }
+          const res = await fetch('/api/logs?' + params.toString(), fetchOpts);
         if(!res.ok){
           const t = await res.text();
           document.getElementById('out').innerText = 'Error: ' + res.status + ' ' + t;
@@ -77,38 +83,25 @@
         })
       }
       document.getElementById('load').addEventListener('click', loadLogs);
-      document.getElementById('use-stored').addEventListener('click', ()=>{
-        const v = localStorage.getItem('jarvis_admin_session') || ''
-        document.getElementById('token').value = v
-      })
-      document.getElementById('save-session').addEventListener('click', ()=>{
-        const v = document.getElementById('token').value || ''
-        if(!v){ alert('No session to save'); return }
-        localStorage.setItem('jarvis_admin_session', v)
-        alert('session saved in localStorage')
-      })
       document.getElementById('login').addEventListener('click', async ()=>{
         const master = document.getElementById('token').value || ''
         if(!master){ alert('Enter master token to exchange'); return }
         try{
           const res = await fetch('/api/admin/login', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({master_token: master})})
           if(!res.ok){ const t = await res.text(); alert('Login failed: '+t); return }
-          const j = await res.json()
-          localStorage.setItem('jarvis_admin_session', j.session_token)
-          // clear master token input to avoid accidental leak
+          // Server sets an HttpOnly cookie; clear master input and inform the user
           document.getElementById('token').value = ''
-          document.getElementById('token').placeholder = 'session acquired'
-          alert('session acquired')
+          alert('Login successful — session cookie set. Reload or continue to use admin pages.')
         }catch(e){ alert('login error: '+String(e)) }
       })
       document.getElementById('logout').addEventListener('click', async ()=>{
-        const session = localStorage.getItem('jarvis_admin_session') || document.getElementById('token').value || ''
-        if(!session){ alert('no session to logout'); return }
+        const manual = document.getElementById('token').value || ''
+        const opts = {method: 'POST'}
+        if(manual){ opts.headers = {'x-admin-session': manual} } else { opts.credentials = 'same-origin' }
         try{
-          const res = await fetch('/api/admin/logout', {method:'POST', headers:{'x-admin-session': session}})
+          const res = await fetch('/api/admin/logout', opts)
           if(!res.ok){ const t = await res.text(); alert('Logout failed: '+t); return }
-          localStorage.removeItem('jarvis_admin_session')
-          alert('session revoked and cleared')
+          alert('session revoked')
         }catch(e){ alert('logout error: '+String(e)) }
       })
 

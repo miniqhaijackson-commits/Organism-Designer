@@ -19,6 +19,7 @@ def get_conn():
 def init_db():
     conn = get_conn()
     c = conn.cursor()
+    # projects and commands
     c.execute(
         """
     CREATE TABLE IF NOT EXISTS projects (
@@ -38,6 +39,41 @@ def init_db():
     )
     """
     )
+    # project files and snapshots
+    c.execute(
+        """
+    CREATE TABLE IF NOT EXISTS project_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER,
+        filename TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    )
+    c.execute(
+        """
+    CREATE TABLE IF NOT EXISTS project_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER,
+        meta_json TEXT,
+        snapshot_path TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    )
+    # pairings
+    c.execute(
+        """
+    CREATE TABLE IF NOT EXISTS pairings (
+        token TEXT PRIMARY KEY,
+        device_name TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    )
+    # admin/session tables
+    _ensure_admin_table(conn)
+
     conn.commit()
     conn.close()
 
@@ -187,6 +223,10 @@ def _ensure_admin_table(conn):
     # table for revoked tokens (support stateless revocation)
     cur.execute(
         "CREATE TABLE IF NOT EXISTS revoked_tokens (token TEXT PRIMARY KEY, actor TEXT, reason TEXT, revoked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
+    # users table for RBAC: actor -> role
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS admin_users (actor TEXT PRIMARY KEY, role TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
     )
 
 
@@ -395,6 +435,95 @@ def list_revoked_tokens(limit: int = 100, offset: int = 0):
     return [dict(r) for r in rows]
 
 
+def create_user(actor: str, role: str = 'admin') -> bool:
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    try:
+        cur.execute("INSERT OR REPLACE INTO admin_users (actor, role) VALUES (?, ?)", (actor, role))
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
+def delete_user(actor: str) -> bool:
+    """Remove an RBAC user entry."""
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM admin_users WHERE actor=?", (actor,))
+        removed = cur.rowcount
+        conn.commit()
+        return bool(removed)
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
+def get_user_role(actor: str) -> str | None:
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT role FROM admin_users WHERE actor=?", (actor,))
+    row = cur.fetchone()
+    conn.close()
+    return row['role'] if row else None
+
+
+def list_users(limit: int = 100, offset: int = 0):
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT actor, role, created_at FROM admin_users ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_user(actor: str) -> bool:
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM admin_users WHERE actor=?", (actor,))
+        removed = cur.rowcount
+        conn.commit()
+        return bool(removed)
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
+def count_active_sessions() -> int:
+    import time
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) as c FROM admin_sessions WHERE expires_at>?", (int(time.time()),))
+    row = cur.fetchone()
+    conn.close()
+    return int(row['c']) if row else 0
+
+
+def count_revoked_tokens() -> int:
+    conn = get_conn()
+    _ensure_admin_table(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) as c FROM revoked_tokens")
+    row = cur.fetchone()
+    conn.close()
+    return int(row['c']) if row else 0
+
+
 def cleanup_revoked_tokens(older_than_seconds: int = 60 * 60 * 24 * 30) -> int:
     """Remove revoked token records older than `older_than_seconds` and return number removed."""
     import time
@@ -475,6 +604,10 @@ def list_project_files(project_id: int):
 def create_project(title: str, description: str = "") -> int:
     conn = get_conn()
     cur = conn.cursor()
+    # ensure table exists (defensive in case init_db wasn't run)
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
     cur.execute("INSERT INTO projects (title, description) VALUES (?, ?)", (title, description))
     pid = cur.lastrowid
     conn.commit()
@@ -485,6 +618,9 @@ def create_project(title: str, description: str = "") -> int:
 def list_projects() -> List[Dict]:
     conn = get_conn()
     cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
     cur.execute("SELECT id, title, description FROM projects ORDER BY created_at DESC")
     rows = cur.fetchall()
     conn.close()
@@ -494,6 +630,9 @@ def list_projects() -> List[Dict]:
 def get_project(project_id: int) -> Optional[Dict]:
     conn = get_conn()
     cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
     cur.execute("SELECT id, title, description FROM projects WHERE id=?", (project_id,))
     row = cur.fetchone()
     conn.close()

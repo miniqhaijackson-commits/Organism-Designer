@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Admin Users — J.A.R.V.I.S.</title>
+    <style>
+      body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:20px}
+      table{width:100%;border-collapse:collapse}
+      th,td{padding:8px;border-bottom:1px solid #eee}
+      button{padding:6px}
+    </style>
+  </head>
+  <body>
+    <h2>Admin Users (RBAC)</h2>
+    <p>Requires admin session. Login to set the admin HttpOnly cookie or provide a manual token.</p>
+    <div>
+      <input id="token" placeholder="(optional) manual token for header auth" style="width:60%" />
+      <button id="load">Load Users</button>
+    </div>
+    <div style="margin-top:12px">
+      <input id="new-actor" placeholder="username" />
+      <select id="new-role"><option value="admin">admin</option><option value="viewer">viewer</option></select>
+      <button id="create">Create User</button>
+    </div>
+    <table>
+      <thead><tr><th>Actor</th><th>Role</th><th>Actions</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <script>
+      async function load(){
+        const token = document.getElementById('token').value || ''
+        const useHeader = !!token
+        const opts = {}
+        if(useHeader){ opts.headers = {'x-admin-session': token} } else { opts.credentials = 'same-origin' }
+        const res = await fetch('/api/admin/users?limit=200', opts)
+        if(!res.ok){ alert('failed to load users'); return }
+        const arr = await res.json()
+        const tb = document.getElementById('rows')
+        tb.innerHTML = ''
+        arr.forEach(u=>{
+          const tr = document.createElement('tr')
+          tr.innerHTML = `<td>${u.actor}</td><td>${u.role}</td><td><button data-actor="${u.actor}" class="del">Delete</button></td>`
+          tb.appendChild(tr)
+        })
+        document.querySelectorAll('button.del').forEach(b=>{
+          b.addEventListener('click', async (ev)=>{
+            const actor = b.getAttribute('data-actor')
+            if(!confirm('Delete user: '+actor+' ?')) return
+            const token = document.getElementById('token').value || ''
+            const useHeader = !!token
+            const opts = {method: 'DELETE'}
+            if(useHeader){ opts.headers = {'x-admin-session': token} } else { opts.credentials = 'same-origin' }
+            const res = await fetch('/api/admin/users/' + encodeURIComponent(actor), opts)
+            if(!res.ok){ const t = await res.text(); alert('delete failed: '+t); return }
+            alert('user deleted')
+            load()
+          })
+        })
+      }
+      document.getElementById('load').addEventListener('click', load)
+      document.getElementById('create').addEventListener('click', async ()=>{
+        const actor = document.getElementById('new-actor').value || ''
+        const role = document.getElementById('new-role').value || 'admin'
+        if(!actor){ alert('enter username'); return }
+        const token = document.getElementById('token').value || ''
+        const useHeader = !!token
+        const opts = {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({actor: actor, role: role})}
+        if(useHeader){ opts.headers['x-admin-session'] = token } else { opts.credentials = 'same-origin' }
+        const res = await fetch('/api/admin/users', opts)
+        if(!res.ok){ const t = await res.text(); alert('create failed: '+t); return }
+        alert('user created')
+        load()
+      })
+    </script>
+  </body>
+</html>

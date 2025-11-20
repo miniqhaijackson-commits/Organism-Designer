@@ -14,7 +14,7 @@
     <h2>Active Admin Sessions</h2>
     <p>Requires admin session or master token.</p>
     <div>
-      <input id="token" placeholder="session token" style="width:60%" />
+      <input id="token" placeholder="(optional) manual token for header auth" style="width:60%" />
       <button id="load">Load Sessions</button>
     </div>
     <table>
@@ -23,11 +23,16 @@
     </table>
     <script>
       async function load(){
-        const token = document.getElementById('token').value || localStorage.getItem('jarvis_admin_session') || ''
-        if(!token){ alert('provide session'); return }
+        const token = document.getElementById('token').value || ''
+        const useHeader = !!token
+        if(!useHeader){
+          // rely on cookie
+        }
         const limit = window.__sess_limit || 10
         const offset = window.__sess_offset || 0
-        const res = await fetch('/api/admin/sessions?limit='+limit+'&offset='+offset, {headers: {'x-admin-session': token}})
+        const opts = {}
+        if(useHeader){ opts.headers = {'x-admin-session': token} } else { opts.credentials = 'same-origin' }
+        const res = await fetch('/api/admin/sessions?limit='+limit+'&offset='+offset, opts)
         if(!res.ok){ alert('failed to load sessions'); return }
         const arr = await res.json()
         const tb = document.getElementById('rows')
@@ -49,7 +54,9 @@
           b.addEventListener('click', async (ev)=>{
             const t = b.getAttribute('data-token')
             if(!confirm('Revoke this session?')) return
-            const r = await fetch('/api/admin/sessions/' + encodeURIComponent(t), {method:'DELETE', headers: {'x-admin-session': token}})
+            const opts = {method: 'DELETE'}
+            if(useHeader){ opts.headers = {'x-admin-session': token} } else { opts.credentials = 'same-origin' }
+            const r = await fetch('/api/admin/sessions/' + encodeURIComponent(t), opts)
             if(r.ok){ alert('revoked'); load() } else { alert('revoke failed') }
           })
         })
@@ -62,10 +69,13 @@
       document.getElementById('revoke-actor-btn').addEventListener('click', async ()=>{
         const actor = document.getElementById('revoke-actor').value || ''
         if(!actor){ alert('enter actor'); return }
-        const token = document.getElementById('token').value || localStorage.getItem('jarvis_admin_session') || ''
-        if(!token){ alert('provide session'); return }
+        const token = document.getElementById('token').value || ''
+        const useHeader = !!token
+        if(!useHeader){ /* rely on cookie */ }
         if(!confirm('Revoke all sessions for actor: ' + actor + '?')) return
-        const res = await fetch('/api/admin/revoke_actor', {method:'POST', headers:{'Content-Type':'application/json', 'x-admin-session': token}, body: JSON.stringify({actor: actor})})
+        const opts = {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({actor: actor})}
+        if(useHeader){ opts.headers['x-admin-session'] = token } else { opts.credentials = 'same-origin' }
+        const res = await fetch('/api/admin/revoke_actor', opts)
         if(!res.ok){ alert('revoke actor failed'); return }
         alert('revoked')
         load()
