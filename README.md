@@ -29,3 +29,50 @@ Security notes:
 
 - The admin login now issues an HttpOnly session cookie; web UIs rely on this cookie by default. Avoid storing master tokens in localStorage or shared browsers.
 - The backend keeps an append-only audit log under `data/jarvis_settings.log` and a local SQLite DB at `data/jarvis.db`.
+
+VOSK (optional, offline STT)
+---------------------------------
+This prototype supports offline speech-to-text using VOSK. To enable it locally:
+
+1. Install the Python package:
+
+```bash
+pip install vosk
+```
+
+2. Download a small (or medium) VOSK model and place it under `models/vosk-model-small` relative to the repository root.
+	Example (small English model):
+
+```bash
+mkdir -p models
+cd models
+curl -LO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+unzip vosk-model-small-en-us-0.15.zip
+mv vosk-model-small-en-us-0.15 vosk-model-small
+cd ..
+```
+
+3. Restart the backend. The `/api/voice/status` endpoint will report whether the model is present and whether `vosk` and `pyttsx3` packages are available.
+
+Notes:
+- VOSK models are downloaded separately because they can be large. Keep them under `models/` for local-only, offline use.
+- If `pyttsx3` is not installed, TTS endpoints will return a clear error indicating how to install it.
+
+VOSK model (optional for offline STT)
+
+This backend includes a VOSK-based transcription helper in `jarvis/voice.py`. To enable on-device transcription:
+
+1. Install the Python dependency: `pip install vosk`.
+2. Download a VOSK small English model and place it at `models/vosk-model-small` relative to the repository root. For example:
+
+```bash
+mkdir -p models
+cd models
+wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+unzip vosk-model-small-en-us-0.15.zip
+mv vosk-model-small-en-us-0.15 vosk-model-small
+```
+
+3. Restart the backend. The endpoint `GET /api/voice/status` will report whether the model is present.
+
+If you don't want to install VOSK, the `/tts` endpoint still works if `pyttsx3` is installed.

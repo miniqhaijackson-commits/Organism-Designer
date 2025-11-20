@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Body
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Body, Depends
+from contextlib import asynccontextmanager
 from fastapi.responses import JSONResponse
 import os
 import time
@@ -13,16 +14,39 @@ from jarvis import voice
 from fastapi.responses import FileResponse
 
 
-app = FastAPI(title="J.A.R.V.I.S Backend (Prototype)")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # initialize DB and background loops
+    db.init_db()
+    try:
+        interval = int(os.environ.get("JARVIS_AUTOSAVE_INTERVAL", "60"))
+    except Exception:
+        interval = 60
+    _autosave_loop(interval=interval)
+    try:
+        cleanup_interval = int(os.environ.get('JARVIS_SESSION_CLEANUP_INTERVAL', '300'))
+    except Exception:
+        cleanup_interval = 300
+    _session_cleanup_loop(interval=cleanup_interval)
+    try:
+        revoked_interval = int(os.environ.get('JARVIS_REVOKED_CLEANUP_INTERVAL', '3600'))
+    except Exception:
+        revoked_interval = 3600
+    try:
+        retention = int(os.environ.get('JARVIS_REVOKE_RETENTION_SECONDS', str(60 * 60 * 24 * 30)))
+    except Exception:
+        retention = 60 * 60 * 24 * 30
+    _revoked_cleanup_loop(interval=revoked_interval, retention=retention)
+    yield
+
+
+app = FastAPI(title="J.A.R.V.I.S Backend (Prototype)", lifespan=lifespan)
 
 # serve a minimal static UI
 app.mount("/ui", StaticFiles(directory="backend/static", html=True), name="ui")
 
 
-@app.on_event("startup")
-def startup_event():
-    # Ensure database is initialized on startup
-    db.init_db()
+
 
 
 @app.get("/health")
@@ -58,6 +82,18 @@ def _verify_admin(request: Request):
     actor = request.headers.get('x-admin-actor', 'admin')
     return True, actor
 
+
+def check_role(min_role: str = 'admin'):
+    """Dependency factory returning a FastAPI dependency that enforces a minimum role."""
+    def _dep(request: Request):
+        ok, actor = _verify_admin(request)
+        if not ok:
+            raise HTTPException(status_code=401, detail='admin required')
+        role = db.get_user_role(actor) or 'admin'
+        if min_role == 'admin' and role != 'admin':
+            raise HTTPException(status_code=403, detail='insufficient privileges')
+        return {'actor': actor, 'role': role}
+    return _dep
 
 
 @app.post('/api/admin/login')
@@ -254,7 +290,7 @@ def admin_metrics(request: Request):
 
 
 @app.post("/projects", response_model=ProjectOut)
-def create_project(p: ProjectCreate):
+async def create_project(request: Request, p: ProjectCreate, _auth=Depends(check_role('admin'))):
     project_id = db.create_project(p.title, p.description or "")
     proj = db.get_project(project_id)
     return proj
@@ -322,7 +358,7 @@ def get_logs(request: Request, limit: int = 200, offset: int = 0, actor: str | N
 
 
 @app.post("/projects/{project_id}/files")
-def upload_project_file(project_id: int, file: UploadFile = File(...)):
+async def upload_project_file(request: Request, project_id: int, file: UploadFile = File(...), _auth=Depends(check_role('admin'))):
     data = file.file.read()
     path = db.add_project_file(project_id, file.filename, data)
     return {"path": path, "filename": file.filename}
@@ -340,7 +376,7 @@ def create_pairing(device_name: str = Form(...)):
 
 
 @app.post("/projects/{project_id}/snapshot")
-def create_snapshot(project_id: int):
+async def create_snapshot(request: Request, project_id: int, _auth=Depends(check_role('admin'))):
     try:
         sid = db.create_snapshot(project_id)
         return {"snapshot_id": sid}
@@ -354,10 +390,10 @@ def list_project_snapshots(project_id: int):
 
 
 @app.post("/snapshots/{snapshot_id}/restore")
-def restore_snapshot(snapshot_id: int):
+async def restore_snapshot(request: Request, snapshot_id: int, _auth=Depends(check_role('admin'))):
     ok = db.restore_snapshot(snapshot_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Snapshot not found")
+        raise HTTPException(status_code=404, detail='Snapshot not found')
     return {"restored": True}
 
 
@@ -430,33 +466,7 @@ def _session_cleanup_loop(interval: int = 300):
     t.start()
 
 
-@app.on_event("startup")
-def startup_event():
-    # Ensure database is initialized on startup
-    db.init_db()
-    # start autosave loop (interval configurable via env var)
-    import os
-    try:
-        interval = int(os.environ.get("JARVIS_AUTOSAVE_INTERVAL", "60"))
-    except Exception:
-        interval = 60
-    _autosave_loop(interval=interval)
-    # start session cleanup loop (remove expired admin sessions)
-    try:
-        cleanup_interval = int(os.environ.get('JARVIS_SESSION_CLEANUP_INTERVAL', '300'))
-    except Exception:
-        cleanup_interval = 300
-    _session_cleanup_loop(interval=cleanup_interval)
-    # start revoked-token cleanup loop (configurable retention and interval)
-    try:
-        revoked_interval = int(os.environ.get('JARVIS_REVOKED_CLEANUP_INTERVAL', '3600'))
-    except Exception:
-        revoked_interval = 3600
-    try:
-        retention = int(os.environ.get('JARVIS_REVOKE_RETENTION_SECONDS', str(60 * 60 * 24 * 30)))
-    except Exception:
-        retention = 60 * 60 * 24 * 30
-    _revoked_cleanup_loop(interval=revoked_interval, retention=retention)
+# lifespan handler sets up DB and background loops (defined earlier)
 
 
 @app.post("/transcribe")
@@ -468,6 +478,43 @@ def transcribe_audio(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"text": text}
+
+
+@app.get('/api/voice/status')
+def voice_status():
+    """Return status information about local STT/TTS capability."""
+    info = {'vosk_installed': False, 'vosk_model_present': False, 'pyttsx3_installed': False}
+    try:
+        import vosk  # type: ignore
+        info['vosk_installed'] = True
+    except Exception:
+        info['vosk_installed'] = False
+    try:
+        info['vosk_model_present'] = bool(voice.MODEL_DIR.exists())
+    except Exception:
+        info['vosk_model_present'] = False
+    try:
+        import pyttsx3  # type: ignore
+        info['pyttsx3_installed'] = True
+    except Exception:
+        info['pyttsx3_installed'] = False
+    return info
+
+
+@app.get('/api/voice/status')
+def voice_status():
+    """Return presence of VOSK model and availability of pyttsx3."""
+    model_present = False
+    try:
+        model_present = voice.MODEL_DIR.exists()
+    except Exception:
+        model_present = False
+    tts_ok = True
+    try:
+        import pyttsx3  # noqa: F401
+    except Exception:
+        tts_ok = False
+    return {'vosk_model_present': bool(model_present), 'pyttsx3_available': bool(tts_ok)}
 
 
 @app.post("/tts")

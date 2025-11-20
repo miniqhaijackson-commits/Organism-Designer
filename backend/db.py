@@ -19,6 +19,7 @@ def get_conn():
 def init_db():
     conn = get_conn()
     c = conn.cursor()
+    # projects and commands
     c.execute(
         """
     CREATE TABLE IF NOT EXISTS projects (
@@ -38,6 +39,41 @@ def init_db():
     )
     """
     )
+    # project files and snapshots
+    c.execute(
+        """
+    CREATE TABLE IF NOT EXISTS project_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER,
+        filename TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    )
+    c.execute(
+        """
+    CREATE TABLE IF NOT EXISTS project_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER,
+        meta_json TEXT,
+        snapshot_path TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    )
+    # pairings
+    c.execute(
+        """
+    CREATE TABLE IF NOT EXISTS pairings (
+        token TEXT PRIMARY KEY,
+        device_name TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    )
+    # admin/session tables
+    _ensure_admin_table(conn)
+
     conn.commit()
     conn.close()
 
@@ -568,6 +604,10 @@ def list_project_files(project_id: int):
 def create_project(title: str, description: str = "") -> int:
     conn = get_conn()
     cur = conn.cursor()
+    # ensure table exists (defensive in case init_db wasn't run)
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
     cur.execute("INSERT INTO projects (title, description) VALUES (?, ?)", (title, description))
     pid = cur.lastrowid
     conn.commit()
@@ -578,6 +618,9 @@ def create_project(title: str, description: str = "") -> int:
 def list_projects() -> List[Dict]:
     conn = get_conn()
     cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
     cur.execute("SELECT id, title, description FROM projects ORDER BY created_at DESC")
     rows = cur.fetchall()
     conn.close()
@@ -587,6 +630,9 @@ def list_projects() -> List[Dict]:
 def get_project(project_id: int) -> Optional[Dict]:
     conn = get_conn()
     cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
     cur.execute("SELECT id, title, description FROM projects WHERE id=?", (project_id,))
     row = cur.fetchone()
     conn.close()
