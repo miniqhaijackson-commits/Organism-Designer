@@ -2,6 +2,7 @@
 from .security import sanitize_input, EnterpriseSecurity
 from .resource_manager import ResourceManager
 from .resilience import RetryMechanism, circuit_breaker, CircuitBreakerError
+from .ai_core import BasicAICore
 
 __all__ = [
     "sanitize_input",
@@ -10,4 +11,5 @@ __all__ = [
     "RetryMechanism",
     "circuit_breaker",
     "CircuitBreakerError",
+    "BasicAICore",
 ]

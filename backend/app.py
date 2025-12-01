@@ -10,10 +10,14 @@ from backend import settings as settings_mod
 from backend.schemas import ProjectCreate, ProjectOut, CommandCreate
 from jarvis.security import EnterpriseSecurity
 from jarvis import voice
+from jarvis import BasicAICore, devices
+from organism_designer import api as organism_api
 from fastapi.responses import FileResponse
 
 
 app = FastAPI(title="J.A.R.V.I.S Backend (Prototype)")
+
+ai_core = BasicAICore()
 
 # serve a minimal static UI
 app.mount("/ui", StaticFiles(directory="backend/static", html=True), name="ui")
@@ -195,11 +199,19 @@ def post_command(c: CommandCreate, request: Request):
     # If command looks like device-control, require pairing token header
     pairing_token = request.headers.get("x-pairing-token")
     if "control" in c.command_text.lower() or "device:" in c.command_text.lower():
-        if not pairing_token or not db.verify_pairing(pairing_token):
+        if not pairing_token or not devices.authenticate_device(pairing_token):
             return JSONResponse(status_code=401, content={"error": "Pairing required for device control"})
 
-    cmd_id = db.create_command(c.command_text)
-    return {"id": cmd_id, "status": "stored", "note": msg}
+    # Store command for history and get AI response
+    db.create_command(c.command_text)
+    response_text = ai_core.chat(c.command_text)
+    return {"response": response_text}
+
+
+@app.get("/history")
+def get_history():
+    return db.get_history()
+
 
 
 
@@ -244,10 +256,60 @@ def get_project_files(project_id: int):
     return db.list_project_files(project_id)
 
 
-@app.post("/pairings")
-def create_pairing(device_name: str = Form(...)):
-    token = db.create_pairing(device_name)
+@app.post("/devices/register")
+def register_device(name: str = Form(...), type: str = Form(...), capabilities: str = Form(...)):
+    import json
+    try:
+        capabilities_list = json.loads(capabilities)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON in capabilities field")
+    token = devices.register_device(name, type, capabilities_list)
     return {"token": token}
+
+
+@app.get("/devices/commands")
+def get_device_commands(request: Request):
+    token = request.headers.get("x-pairing-token")
+    if not token or not devices.authenticate_device(token):
+        raise HTTPException(status_code=401, detail="Invalid or missing pairing token")
+
+    device = db.get_device(token)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    commands = db.get_pending_commands_for_device(device['id'])
+    for cmd in commands:
+        db.update_command_status(cmd['id'], 'in_progress')
+
+    return commands
+
+
+@app.post("/devices/commands/{command_id}")
+def update_device_command_status(command_id: int, status: str = Form(...), request: Request):
+    token = request.headers.get("x-pairing-token")
+    if not token or not devices.authenticate_device(token):
+        raise HTTPException(status_code=401, detail="Invalid or missing pairing token")
+
+    db.update_command_status(command_id, status)
+    return {"status": "updated", "command_id": command_id, "new_status": status}
+
+
+@app.post("/devices/{device_id}/commands")
+def enqueue_device_command(device_id: int, command: str = Form(...), payload: str = Form(None), request: Request):
+    ok, _ = _verify_admin(request)
+    if not ok:
+        raise HTTPException(status_code=401, detail="admin token required")
+
+    import json
+    payload_dict = None
+    if payload:
+        try:
+            payload_dict = json.loads(payload)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON in payload")
+
+    db.add_command_to_queue(device_id, command, payload_dict)
+    return {"status": "enqueued", "device_id": device_id, "command": command}
 
 
 @app.post("/projects/{project_id}/snapshot")
@@ -391,6 +453,9 @@ def synthesize_tts(text: str = Form(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return FileResponse(path, media_type='audio/wav', filename=out_path.name)
+
+
+app.include_router(organism_api.router, prefix="/api", tags=["Organism Designer"])
 
 
 if __name__ == "__main__":

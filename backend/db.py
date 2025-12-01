@@ -38,6 +38,54 @@ def init_db():
     )
     """
     )
+    c.execute(
+        """
+    CREATE TABLE IF NOT EXISTS conversation_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_message TEXT NOT NULL,
+        jarvis_response TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    )
+    c.execute(
+        """
+    CREATE TABLE IF NOT EXISTS devices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        token TEXT NOT NULL UNIQUE,
+        capabilities TEXT,
+        last_seen TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    )
+    c.execute(
+        """
+    CREATE TABLE IF NOT EXISTS command_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id INTEGER NOT NULL,
+        command TEXT NOT NULL,
+        payload TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (device_id) REFERENCES devices (id)
+    )
+    """
+    )
+    c.execute(
+        """
+    CREATE TABLE IF NOT EXISTS organisms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        genome TEXT NOT NULL,
+        parent_id INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (parent_id) REFERENCES organisms (id)
+    )
+    """
+    )
     conn.commit()
     conn.close()
 
@@ -148,35 +196,75 @@ def restore_snapshot(snapshot_id: int) -> bool:
     return True
 
 
-def create_pairing(device_name: str) -> str:
-    import secrets
-    token = secrets.token_urlsafe(32)
+def add_device(name: str, type: str, token: str, capabilities: list):
+    import json
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO commands (command_text) VALUES (?)", (f"pairing:{device_name}",)
+        "INSERT INTO devices (name, type, token, capabilities) VALUES (?, ?, ?, ?)",
+        (name, type, token, json.dumps(capabilities)),
     )
-    # store pairing metadata in a simple table
-    cur.execute(
-        "CREATE TABLE IF NOT EXISTS pairings (token TEXT PRIMARY KEY, device_name TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-    )
-    cur.execute("INSERT INTO pairings (token, device_name) VALUES (?, ?)", (token, device_name))
     conn.commit()
     conn.close()
-    return token
 
 
-def verify_pairing(token: str) -> bool:
+def verify_device(token: str) -> bool:
     conn = get_conn()
     cur = conn.cursor()
-    # ensure table exists
-    cur.execute(
-        "CREATE TABLE IF NOT EXISTS pairings (token TEXT PRIMARY KEY, device_name TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-    )
-    cur.execute("SELECT token FROM pairings WHERE token=?", (token,))
+    cur.execute("SELECT token FROM devices WHERE token=?", (token,))
     row = cur.fetchone()
     conn.close()
     return bool(row)
+
+
+def get_device(token: str) -> Optional[Dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, type, capabilities, last_seen FROM devices WHERE token=?", (token,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def list_devices() -> List[Dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, type, capabilities, last_seen FROM devices ORDER BY created_at DESC")
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_command_to_queue(device_id: int, command: str, payload: Optional[Dict] = None):
+    import json
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO command_queue (device_id, command, payload) VALUES (?, ?, ?)",
+        (device_id, command, json.dumps(payload) if payload else None),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_pending_commands_for_device(device_id: int) -> List[Dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, command, payload, status FROM command_queue WHERE device_id=? AND status='pending' ORDER BY created_at ASC",
+        (device_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_command_status(command_id: int, status: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE command_queue SET status=? WHERE id=?", (status, command_id))
+    conn.commit()
+    conn.close()
 
 
 def _ensure_admin_table(conn):
@@ -508,3 +596,52 @@ def create_command(command_text: str) -> int:
     conn.commit()
     conn.close()
     return cid
+
+
+def add_to_history(user_message: str, jarvis_response: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO conversation_history (user_message, jarvis_response) VALUES (?, ?)", (user_message, jarvis_response))
+    conn.commit()
+    conn.close()
+
+
+def get_history(limit: int = 10) -> List[Dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT user_message, jarvis_response FROM conversation_history ORDER BY created_at DESC LIMIT ?", (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def create_organism(name: str, genome: str, parent_id: Optional[int] = None) -> int:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO organisms (name, genome, parent_id) VALUES (?, ?, ?)",
+        (name, genome, parent_id),
+    )
+    oid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return oid
+
+
+def get_organism(organism_id: int) -> Optional[Dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, genome, parent_id, created_at FROM organisms WHERE id=?", (organism_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def list_organisms(limit: int = 50) -> List[Dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, genome, parent_id, created_at FROM organisms ORDER BY created_at DESC LIMIT ?", (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
