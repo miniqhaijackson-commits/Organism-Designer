@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>J.A.R.V.I.S. Chat</title>
+    <style>
+      body { background:#071023; color:#bfe6ff; font-family: sans-serif; padding:20px; display: flex; flex-direction: column; height: 95vh; }
+      #chat-container { flex-grow: 1; overflow-y: auto; border: 1px solid #0b2140; padding: 10px; border-radius: 8px; margin-bottom: 20px; }
+      .message { margin-bottom: 10px; }
+      .user-message { text-align: right; color: #8af; }
+      .jarvis-message { text-align: left; color: #bfe6ff; }
+      #input-container { display: flex; }
+      input { flex-grow: 1; background:#0b2140; color:#bfe6ff; border: 1px solid #1c3a5f; padding: 10px; border-radius: 8px; }
+      button { background: #1c3a5f; color: #bfe6ff; border: none; padding: 10px 15px; margin-left: 10px; border-radius: 8px; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <h1>J.A.R.V.I.S.</h1>
+    <div id="chat-container"></div>
+    <div id="input-container">
+      <input id="message-input" placeholder="Type a message..."/>
+      <button onclick="sendMessage()">Send</button>
+      <button id="record-button">Record</button>
+    </div>
+
+    <script>
+      const chatContainer = document.getElementById('chat-container');
+      const messageInput = document.getElementById('message-input');
+
+      async function loadHistory() {
+        const response = await fetch('/history');
+        const history = await response.json();
+        history.reverse().forEach(entry => {
+          displayMessage(entry.user_message, 'user');
+          displayMessage(entry.jarvis_response, 'jarvis');
+        });
+      }
+
+      async function sendMessage() {
+        const message = messageInput.value;
+        if (!message) return;
+
+        displayMessage(message, 'user');
+        messageInput.value = '';
+
+        const response = await fetch('/commands', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify({command_text: message})
+        });
+        const data = await response.json();
+        displayMessage(data.response, 'jarvis');
+      }
+
+      function displayMessage(text, sender) {
+        const messageElement = document.createElement('div');
+        messageElement.classList.add('message', sender + '-message');
+        messageElement.textContent = text;
+        chatContainer.appendChild(messageElement);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+      }
+
+      messageInput.addEventListener('keyup', function(event) {
+        if (event.key === 'Enter') {
+          sendMessage();
+        }
+      });
+
+      const recordButton = document.getElementById('record-button');
+      let mediaRecorder;
+      let audioChunks = [];
+
+      recordButton.addEventListener('mousedown', async () => {
+        if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaRecorder = new MediaRecorder(stream);
+          mediaRecorder.ondataavailable = event => {
+            audioChunks.push(event.data);
+          };
+          mediaRecorder.onstop = async () => {
+            const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+            const formData = new FormData();
+            formData.append('file', audioBlob, 'recording.wav');
+
+            const response = await fetch('/transcribe', {
+              method: 'POST',
+              body: formData
+            });
+            const data = await response.json();
+            messageInput.value = data.text;
+            sendMessage();
+            audioChunks = [];
+          };
+          audioChunks = [];
+          mediaRecorder.start();
+          recordButton.textContent = 'Recording...';
+        }
+      });
+
+      recordButton.addEventListener('mouseup', () => {
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+          mediaRecorder.stop();
+          recordButton.textContent = 'Record';
+        }
+      });
+
+      window.addEventListener('DOMContentLoaded', loadHistory);
+    </script>
+  </body>
+</html>
