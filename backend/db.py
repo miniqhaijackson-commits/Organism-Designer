@@ -487,20 +487,6 @@ def list_users(limit: int = 100, offset: int = 0):
     return [dict(r) for r in rows]
 
 
-def delete_user(actor: str) -> bool:
-    conn = get_conn()
-    _ensure_admin_table(conn)
-    cur = conn.cursor()
-    try:
-        cur.execute("DELETE FROM admin_users WHERE actor=?", (actor,))
-        removed = cur.rowcount
-        conn.commit()
-        return bool(removed)
-    except Exception:
-        conn.rollback()
-        return False
-    finally:
-        conn.close()
 
 
 def count_active_sessions() -> int:
