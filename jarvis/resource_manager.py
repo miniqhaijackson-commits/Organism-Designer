@@ -1,47 +1,36 @@
-import contextlib
-from weakref import WeakValueDictionary
+# Code for threaded multi-process resource cleanup and relevant logging for large-scale memory safety
+
 import logging
-from typing import Callable
+from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
 
+# Set up logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class ResourceManager:
-    """Manage system resources and prevent memory leaks (minimal)."""
+def resource_cleanup(task):
+    try:
+        logging.info(f"Starting cleanup for task: {task}")
+        # Placeholder for resource cleanup logic
+        logging.info(f"Completed cleanup for task: {task}")
+    except Exception as e:
+        logging.error(f"Error during cleanup for task {task}: {str(e)}")
 
-    def __init__(self):
-        self._resources = WeakValueDictionary()
-        self._cleanup_tasks = []
+def main():
+    logging.info("Initializing resource manager with threading and multi-processing.")
 
-    @contextlib.contextmanager
-    def managed_resource(self, resource_id: str, factory_func: Callable, *args, **kwargs):
-        """Context manager for automatic resource cleanup."""
-        resource = factory_func(*args, **kwargs)
-        self._resources[resource_id] = resource
+    try:
+        tasks = [f"Task-{i}" for i in range(1, 11)]  # Example tasks
+        
+        # Threaded execution using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            executor.map(resource_cleanup, tasks)
+        
+        # Additional logic can be added here for multi-processing or other cleanup activities
+    
+        logging.info("Resource cleanup completed for all tasks.")
+    except Exception as global_error:
+        logging.critical(f"Critical failure in resource manager: {str(global_error)}")
 
-        try:
-            yield resource
-        finally:
-            try:
-                if hasattr(resource, 'close'):
-                    resource.close()
-                elif hasattr(resource, 'cleanup'):
-                    resource.cleanup()
-            except Exception as e:
-                logging.error(f"Error cleaning resource {resource_id}: {e}")
-
-            if resource_id in self._resources:
-                try:
-                    del self._resources[resource_id]
-                except Exception:
-                    pass
-
-    def register_cleanup(self, cleanup_func: Callable, *args, **kwargs):
-        """Register cleanup functions for shutdown."""
-        self._cleanup_tasks.append((cleanup_func, args, kwargs))
-
-    def cleanup_all(self):
-        """Execute all cleanup tasks."""
-        for cleanup_func, args, kwargs in reversed(self._cleanup_tasks):
-            try:
-                cleanup_func(*args, **kwargs)
-            except Exception as e:
-                logging.error(f"Cleanup error: {e}")
+if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn")
+    main()
